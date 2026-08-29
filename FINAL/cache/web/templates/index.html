@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>无锡住宅房价预测系统</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pinyin-pro@3/dist/pinyin-pro.min.js"></script>
+<style>
+  :root {
+    --primary:#5b4bc4; --primary2:#8b7cf6; --accent:#ff8a5c;
+    --bg1:#f4f3fa; --bg2:#eef3fb; --card:#fff; --line:#e6e4f2;
+    --text:#2b2b3a; --muted:#8a87a0; --green:#27ae60; --orange:#e67e22; --red:#c0392b;
+    --glass-bg:rgba(255,255,255,.72); --glass-border:rgba(255,255,255,.55);
+    --glass-shadow:0 8px 32px rgba(31,38,135,.08);
+  }
+  * { box-sizing:border-box; }
+  body { font-family:"Microsoft YaHei",sans-serif; margin:0; color:var(--text);
+         background:linear-gradient(135deg,#e8e4f8 0%,#dce8fb 25%,#eaf0f9 50%,#f2e8f6 75%,#e8eef8 100%);
+         background-attachment:fixed; min-height:100vh; position:relative; }
+  body::before { content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:radial-gradient(ellipse at 20% 20%,rgba(139,124,246,.12) 0%,transparent 55%),
+               radial-gradient(ellipse at 80% 70%,rgba(255,138,92,.08) 0%,transparent 55%),
+               radial-gradient(ellipse at 50% 50%,rgba(91,75,196,.05) 0%,transparent 70%); }
+  .top { background:rgba(255,255,255,.65); backdrop-filter:blur(24px) saturate(180%);
+         -webkit-backdrop-filter:blur(24px) saturate(180%);
+         padding:14px 30px; border-bottom:1px solid rgba(255,255,255,.4);
+         display:flex; align-items:center; gap:16px;
+         position:sticky; top:0; z-index:10; flex-wrap:wrap;
+         box-shadow:0 2px 20px rgba(31,38,135,.06); }
+  .logo { font-size:24px; }
+  .brand { display:flex; flex-direction:column; }
+  .brand h1 { font-size:16px; margin:0; }
+  .brand span { font-size:11px; color:var(--muted); }
+  .tabs { display:flex; gap:6px; margin-left:auto;
+          background:rgba(240,238,251,.55); backdrop-filter:blur(8px);
+          -webkit-backdrop-filter:blur(8px); padding:4px; border-radius:12px;
+          border:1px solid rgba(255,255,255,.35); }
+  .tab { padding:8px 26px; border:none; border-radius:9px; cursor:pointer; font-size:14px;
+         background:transparent; color:#666; transition:all .25s; }
+  .tab.active { background:var(--primary); color:#fff; box-shadow:0 4px 16px rgba(91,75,196,.4); }
+  .content { display:none; } .content.active { display:block; }
+  .wrap { max-width:1180px; margin:0 auto; padding:22px 26px 60px; position:relative; z-index:1; }
+  .card { background:var(--glass-bg); backdrop-filter:blur(20px) saturate(180%);
+          -webkit-backdrop-filter:blur(20px) saturate(180%);
+          border-radius:18px; padding:22px 28px; margin-bottom:18px;
+          border:1px solid var(--glass-border); box-shadow:var(--glass-shadow);
+          transition:box-shadow .3s, transform .3s; }
+  .card:hover { box-shadow:0 12px 40px rgba(31,38,135,.12); }
+  .card h2 { font-size:14px; margin:0 0 14px; color:#555; display:flex; align-items:center; gap:8px; }
+  .card h2::before { content:""; width:4px; height:15px; border-radius:2px;
+                     background:linear-gradient(var(--primary),var(--primary2)); }
+  select, input { padding:9px 14px; border:1px solid rgba(0,0,0,.08); border-radius:10px;
+                  font-size:14px; background:rgba(255,255,255,.65);
+                  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+                  transition:border .2s, box-shadow .2s; }
+  select:focus, input:focus { outline:none; border-color:var(--primary);
+                              box-shadow:0 0 0 3px rgba(91,75,196,.15);
+                              background:rgba(255,255,255,.85); }
+  button { padding:10px 26px; border:none; border-radius:10px; font-size:14px; cursor:pointer;
+           background:linear-gradient(135deg,var(--primary),var(--primary2)); color:#fff;
+           box-shadow:0 3px 12px rgba(91,75,196,.3); transition:transform .15s, box-shadow .15s; }
+  button:hover { transform:translateY(-1px); box-shadow:0 6px 20px rgba(91,75,196,.45); }
+  button:disabled { opacity:.5; cursor:not-allowed; transform:none; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th { background:rgba(246,245,253,.6); backdrop-filter:blur(8px);
+       -webkit-backdrop-filter:blur(8px); color:#555; font-weight:600; }
+  th, td { border:1px solid rgba(0,0,0,.06); padding:7px 10px; text-align:center; }
+  tr:nth-child(even) td { background:rgba(250,250,255,.5); }
+  .drift-high { color:var(--red); font-weight:700; } .drift-mid { color:var(--orange); font-weight:700; }
+  .drift-low { color:var(--green); font-weight:700; }
+  .stats { display:flex; gap:16px; flex-wrap:wrap; }
+  .stat { flex:1; min-width:150px;
+          background:rgba(255,255,255,.5); backdrop-filter:blur(14px) saturate(160%);
+          -webkit-backdrop-filter:blur(14px) saturate(160%);
+          border:1px solid rgba(255,255,255,.45); border-radius:16px; padding:16px 20px;
+          box-shadow:0 4px 20px rgba(31,38,135,.06); transition:transform .2s, box-shadow .2s; }
+  .stat:hover { transform:translateY(-2px); box-shadow:0 8px 28px rgba(31,38,135,.12); }
+  .stat .lbl { font-size:12px; color:var(--muted); }
+  .stat .val { font-size:22px; font-weight:700; margin-top:4px; color:var(--primary); }
+  .stat .sub { font-size:11px; color:var(--muted); margin-top:2px; }
+  .progress-wrap { background:rgba(236,234,247,.5); backdrop-filter:blur(6px);
+                   -webkit-backdrop-filter:blur(6px); border-radius:10px; height:16px;
+                   overflow:hidden; margin:12px 0; position:relative;
+                   border:1px solid rgba(255,255,255,.3); }
+  .progress-bar { height:100%; width:0%; border-radius:10px; transition:width .45s ease;
+                  background:linear-gradient(90deg,var(--primary),var(--primary2),var(--accent));
+                  background-size:200% 100%; animation:shimmer 2.5s linear infinite; }
+  .progress-bar.indet { width:40% !important; animation:slide 1.4s ease-in-out infinite; }
+  @keyframes shimmer { 0%{background-position:0% 0} 100%{background-position:200% 0} }
+  @keyframes slide { 0%{margin-left:-40%} 100%{margin-left:100%} }
+  .progress-text { font-size:12.5px; color:#666; margin:6px 0 2px; display:flex;
+                   justify-content:space-between; }
+  .hint { font-size:12px; color:var(--muted); margin-top:8px; }
+  .badge { display:inline-block; padding:3px 12px; border-radius:20px; font-size:12px;
+           background:rgba(240,238,251,.6); backdrop-filter:blur(6px);
+           -webkit-backdrop-filter:blur(6px); color:var(--primary); font-weight:600;
+           border:1px solid rgba(255,255,255,.3); }
+  .badge-green { background:rgba(232,247,238,.6); color:var(--green); }
+  .badge-orange { background:rgba(253,241,229,.6); color:var(--orange); }
+  .badge-red { background:rgba(253,234,234,.6); color:var(--red); }
+  .detail { font-size:13px; color:#666; margin-top:8px; line-height:1.7; }
+  #chart { width:100%; height:480px; }
+  .spinner { width:18px; height:18px; border:3px solid rgba(227,224,245,.5);
+             border-top-color:var(--primary); border-radius:50%;
+             animation:spin .8s linear infinite; display:inline-block;
+             vertical-align:middle; margin-right:8px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .empty { text-align:center; color:var(--muted); padding:40px 0; font-size:14px; }
+</style>
+</head>
+<body>
+<div class="top">
+  <span class="logo">🏠</span>
+  <div class="brand">
+    <h1>无锡住宅小区房价预测系统</h1>
+    <span>372 训练小区 · 双轨模型 · 漂移检测 · 三情景</span>
+  </div>
+  <div class="tabs">
+    <div class="tab active" id="tab-predict" onclick="switchTab('predict')">📈 预测</div>
+    <div class="tab" id="tab-train" onclick="switchTab('train')">⚙️ 训练</div>
+  </div>
+</div>
+
+<div class="wrap">
+<!-- ============ 预测页 ============ -->
+<div class="content active" id="page-predict">
+  <div class="card">
+    <h2>选择小区</h2>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+      <select id="sel" onchange="loadPredict()"><option value="">选择小区…</option></select>
+      <input id="search" placeholder="🔍 搜索小区…" oninput="filterList()">
+      <span id="load-status" class="hint"></span>
+    </div>
+    <div id="load-progress" style="display:none">
+      <div class="progress-wrap"><div class="progress-bar indet" id="load-bar"></div></div>
+      <div class="progress-text"><span id="load-text">正在加载小区数据…</span><span id="load-pct"></span></div>
+    </div>
+  </div>
+  <div id="empty-hint" class="empty">👆 请选择小区开始预测</div>
+
+  <div class="card" id="card-summary" style="display:none">
+    <h2>预测概览</h2>
+    <div class="stats" id="summary"></div>
+  </div>
+
+  <div class="card" id="card-drift" style="display:none">
+    <h2>分布漂移检测</h2>
+    <div id="drift"></div>
+  </div>
+
+  <div class="card" id="card-chart" style="display:none">
+    <h2>历史走势 + 正式预测(至 2031.12 · 50%区间 + 三情景)</h2>
+    <div id="pred-progress" style="display:none">
+      <div class="progress-wrap"><div class="progress-bar" id="pred-bar"></div></div>
+      <div class="progress-text"><span id="pred-text">正在计算预测…</span><span id="pred-pct"></span></div>
+    </div>
+    <div id="chart"></div>
+  </div>
+
+  <div class="card" id="card-diag" style="display:none">
+    <h2>多截断点诊断(截断→预测12月 vs 真实)</h2>
+    <div id="diag"></div>
+  </div>
+</div>
+
+<!-- ============ 训练页 ============ -->
+<div class="content" id="page-train">
+  <div class="card">
+    <h2>联合模型训练</h2>
+    <div class="detail" style="font-size:14px">
+      用 <b>372 个训练小区</b>(与测试集物理隔离)+ 39 维特征
+      (价格形态 + 政策事件 + 宏观 + 小区属性)训练五模型集成:
+      Ridge + RF + GBR + XGB + LightGBM,<b>100 轮 × 500 树</b>,8 核并行加速。
+      训练约 <b>10 分钟</b>,完成后自动保存到 models/。
+    </div>
+    <div style="margin-top:16px">
+      <button id="btn-train" onclick="startTrain()">开始训练</button>
+    </div>
+    <div id="train-progress" style="display:none;margin-top:16px">
+      <div class="progress-wrap"><div class="progress-bar" id="train-bar"></div></div>
+      <div class="progress-text"><span id="train-text"></span><span id="train-pct"></span></div>
+    </div>
+    <div id="train-msg" style="margin-top:12px;font-size:14px;font-weight:600"></div>
+    <div class="hint">训练期间预测功能不受影响,训练与预测相互独立。</div>
+  </div>
+  <div class="card">
+    <h2>模型信息</h2>
+    <div id="model-info" class="detail">加载中…</div>
+  </div>
+</div>
+</div>
+
+<script>
+let allComplexes = [];
+let loadStarted = false;
+const sel = document.getElementById("sel");
+
+// 页面加载立即开始加载小区数据(无需点击任何按钮)
+window.addEventListener("load", () => { if (!loadStarted) { loadStarted = true; init(); } });
+
+function switchTab(t) {
+  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+  document.querySelectorAll(".content").forEach(x => x.classList.remove("active"));
+  document.getElementById("tab-" + t).classList.add("active");
+  document.getElementById("page-" + t).classList.add("active");
+  if (t === "predict" && !loadStarted) { loadStarted = true; init(); }
+  if (t === "train") loadModelInfo();
+}
+
+/* ---------- 小区列表加载(真实进度 + 预计剩余秒数) ---------- */
+function fmtEta(s) {
+  if (!s || s <= 0) return "";
+  if (s < 60) return `预计剩余 ${Math.ceil(s)} 秒`;
+  return `预计剩余 ${Math.floor(s / 60)} 分 ${Math.ceil(s % 60)} 秒`;
+}
+
+async function init() {
+  const lp = document.getElementById("load-progress"),
+        lb = document.getElementById("load-bar"),
+        lt = document.getElementById("load-text"), lc = document.getElementById("load-pct");
+  lp.style.display = "";
+  lb.classList.add("indet");
+  lt.textContent = "正在加载小区数据…";
+  lc.textContent = "";
+  sel.disabled = true;
+  // 轮询真实加载进度(后端线程化解析 372 个小区,~1 分钟)
+  let loadCount = 0;
+  const MAX_LOAD_POLL = 600;
+  const poll = setInterval(async () => {
+    if (++loadCount > MAX_LOAD_POLL) {
+      clearInterval(poll);
+      lt.textContent = "加载超时,请刷新页面重试";
+      sel.disabled = false;
+      return;
+    }
+    const s = await (await fetch("/api/load_progress")).json();
+    const pct = s.total > 0 ? Math.min(99, Math.round(s.done / s.total * 100)) : 0;
+    if (pct > 0) lb.classList.remove("indet");
+    lb.style.width = pct + "%";
+    lc.textContent = pct > 0 ? pct + "%" : "";
+    lt.textContent = s.stage + (s.eta ? ` · ${fmtEta(s.eta)}` : "");
+    if (s.ready || s.stage === "失败") {
+      clearInterval(poll);
+      lb.classList.remove("indet");
+      lb.style.width = "100%";
+      lc.textContent = "100%";
+      const res = await fetch("/api/complexes");
+      const j = await res.json();
+      allComplexes = j.items || [];
+      sel.disabled = false;
+      lt.textContent = s.msg || `加载完成: ${allComplexes.length} 个小区`;
+      setTimeout(() => { lp.style.display = "none"; }, 900);
+      for (const c of allComplexes) {
+        const o = document.createElement("option");
+        o.value = c.name; o.textContent = `[${c.group}] ${c.name}`;
+        sel.appendChild(o);
+      }
+    }
+  }, 500);
+}
+
+function filterList() {
+  const q = document.getElementById("search").value.trim();
+  sel.innerHTML = '<option value="">选择小区…</option>';
+  // 拼音匹配:将查询转为拼音首字母/全拼
+  let py = "";
+  try {
+    if (typeof pinyinPro !== "undefined" && q) {
+      py = pinyinPro.pinyin(q, { toneType: "none", type: "array" }).join("");
+      const pyShort = pinyinPro.pinyin(q, { toneType: "none", pattern: "first" }).join("");
+      py = py + "|" + pyShort;
+    }
+  } catch (e) { /* 拼音库不可用,回退到文本匹配 */ }
+  for (const c of allComplexes) {
+    if (!q) { /* 无搜索词,全部显示 */ }
+    else if (c.name.includes(q)) { /* 中文直接匹配 */ }
+    else if (py) {
+      const namePy = pinyinPro.pinyin(c.name, { toneType: "none", type: "array" }).join("");
+      const nameShort = pinyinPro.pinyin(c.name, { toneType: "none", pattern: "first" }).join("");
+      if (!namePy.includes(py.split("|")[0]) && !nameShort.includes(py.split("|")[1])) continue;
+    } else continue;
+    const o = document.createElement("option");
+    o.value = c.name; o.textContent = `[${c.group}] ${c.name}`;
+    sel.appendChild(o);
+  }
+}
+
+/* ---------- 预测(真实进度 + 预计剩余秒数) ---------- */
+async function loadPredict() {
+  const name = sel.value;
+  if (!name) return;
+  document.getElementById("empty-hint").style.display = "none";
+  // 先显示父卡片,否则内部的进度条不可见
+  document.getElementById("card-chart").style.display = "";
+  const pp = document.getElementById("pred-progress"), pb = document.getElementById("pred-bar"),
+        pt = document.getElementById("pred-text"), pc = document.getElementById("pred-pct");
+  pp.style.display = "";
+  pb.classList.add("indet");
+  pt.textContent = "正在启动预测…"; pc.textContent = "";
+  const r = await fetch("/api/predict?name=" + encodeURIComponent(name), { method: "POST" });
+  if (!r.ok) {
+    // 已有任务在进行:继续轮询等待它完成
+    pt.textContent = "已有预测进行中,等待完成…";
+  }
+  // 轮询预测进度(阶段 + 百分比 + ETA)
+  let pollCount = 0;
+  const MAX_POLL = 600; // 最长等待 5 分钟(600 × 0.5s)
+  const poll = setInterval(async () => {
+    if (++pollCount > MAX_POLL) {
+      clearInterval(poll);
+      pt.textContent = "预测超时,请刷新页面重试";
+      setTimeout(() => { pp.style.display = "none"; }, 3000);
+      return;
+    }
+    const s = await (await fetch("/api/predict_progress")).json();
+    const pct = Math.min(99, s.pct || 0);
+    if (pct > 0) pb.classList.remove("indet");
+    pb.style.width = pct + "%";
+    pc.textContent = pct > 0 ? pct + "%" : "";
+    pt.textContent = (s.stage || "预测中…") + (s.eta ? ` · ${fmtEta(s.eta)}` : "");
+    if (s.stage === "完成" && s.result) {
+      clearInterval(poll);
+      pb.classList.remove("indet");
+      pb.style.width = "100%";
+      pc.textContent = "100%";
+      pt.textContent = `预测完成(${Math.round(s.elapsed)}秒)`;
+      setTimeout(() => { pp.style.display = "none"; }, 800);
+      renderResult(s.result);
+      return;
+    }
+    if (s.stage === "完成" && !s.result) {
+      // 完成但无结果:继续轮询一小段时间,可能后端还在序列化
+      pt.textContent = "预测完成,正在准备数据…";
+      return;
+    }
+    if (s.stage === "失败") {
+      clearInterval(poll);
+      pt.textContent = "预测失败: " + (s.msg || "");
+      setTimeout(() => { pp.style.display = "none"; }, 3000);
+    }
+  }, 500);
+}
+
+function renderResult(d) {
+  try {
+    if (d.error) {
+      document.getElementById("card-summary").style.display = "";
+      document.getElementById("summary").innerHTML = d.error;
+      return;
+    }
+
+    const fmt = v => v != null ? `¥${Number(v).toLocaleString()}` : "暂无数据";
+    const fmtPct = v => v != null ? `${v}%` : "暂无数据";
+    const stat = (lbl, val, sub) =>
+      `<div class="stat"><div class="lbl">${lbl}</div><div class="val">${val}</div>
+       ${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
+
+    document.getElementById("summary").innerHTML =
+      stat("当前综合均价(2026.06)", fmt(d.current)) +
+      stat(`${d.forecast_end || "2031.12"} 基准预测`, d.last ? fmt(d.last.p50) : "暂无数据",
+           d.last ? `区间 [${fmt(d.last.p10)}, ${fmt(d.last.p90)}]` : "") +
+      stat("乐观 / 悲观", d.last ? `${fmt(d.last.opt)} / ${fmt(d.last.pess)}` : "暂无数据",
+           "三情景 P50") +
+      stat("LPR 环境", d.macro_end && d.macro_end.lpr != null ? `${d.macro_end.lpr}%` : "暂无数据", "5年期以上");
+    document.getElementById("card-summary").style.display = "";
+
+    // 漂移检测
+    if (d.drift) {
+      const dr = document.getElementById("drift");
+      const lv = d.drift.level || "未知";
+      const bcls = lv === "高" ? "badge-red" : lv === "中" ? "badge-orange" : "badge-green";
+      dr.innerHTML = `<span class="badge ${bcls}">漂移等级: ${lv}</span>
+        <div class="detail">${(d.drift.details || ["无详细信息"]).join("<br>")}</div>`;
+      document.getElementById("card-drift").style.display = "";
+    } else {
+      document.getElementById("card-drift").style.display = "none";
+    }
+
+    // 图表
+    const chart = echarts.init(document.getElementById("chart"));
+    if (d.pred && d.pred.length) {
+      const dates = d.pred.map(p => p.date);
+      chart.setOption({
+        tooltip: { trigger: "axis", valueFormatter: v => v ? v.toLocaleString() : v },
+        legend: { data: ["历史综合均价", "基准P50", "50%区间", "乐观", "悲观"], top: 0, textStyle:{color:"#555"} },
+        grid: { left: 85, right: 35, top: 42, bottom: 72 },
+        xAxis: { type: "category", data: dates, axisLabel: { rotate: 60, fontSize: 9, color:"#999" },
+                 axisLine: { lineStyle: { color: "#d8d5ea" } } },
+        yAxis: { type: "value", scale: true, axisLabel: { formatter: v => v.toLocaleString(), color:"#999" },
+                 splitLine: { lineStyle: { color: "#f0eefb" } } },
+        dataZoom: [
+          { type: "inside", start: 0, end: 100, minValueSpan: 6 },
+          { type: "slider", start: 0, end: 100, height: 20, bottom: 6,
+            borderColor: "#d8d5ea", fillerColor: "rgba(91,75,196,0.12)",
+            handleStyle: { color: "#5b4bc4" } },
+        ],
+        series: [
+          { name: "历史综合均价", type: "line", data: (d.hist || []).map(h => [h.date, h.zonghe]), symbol: "none",
+            lineStyle: { color: "#2b2b3a", width: 2 } },
+          { name: "50%区间", type: "line", data: d.pred.map(p => p.p10), lineStyle: { opacity: 0 }, stack: "band", symbol: "none" },
+          { name: "50%区间", type: "line", data: d.pred.map(p => p.p90 - p.p10), lineStyle: { opacity: 0 }, stack: "band", symbol: "none",
+            areaStyle: { color: "rgba(91,75,196,0.16)" } },
+          { name: "基准P50", type: "line", data: d.pred.map(p => p.p50), symbol: "none",
+            lineStyle: { color: "#5b4bc4", width: 2.6 } },
+          { name: "乐观", type: "line", data: d.pred.map(p => p.opt), symbol: "none",
+            lineStyle: { color: "#27ae60", width: 1.6, type: "dashed" } },
+          { name: "悲观", type: "line", data: d.pred.map(p => p.pess), symbol: "none",
+            lineStyle: { color: "#e67e22", width: 1.6, type: "dashed" } },
+        ],
+      });
+    } else {
+      chart.setOption({
+        title: { text: "暂无预测数据", left: "center", top: "center", textStyle: { color: "#999" } }
+      });
+    }
+    document.getElementById("card-chart").style.display = "";
+
+    // 诊断表格
+    const diag = document.getElementById("diag");
+    const rows = d.diag && d.diag.rows;
+    if (rows && rows.length) {
+      let html = `<table><tr><th>截断点</th><th>序列</th><th>MAE</th><th>MAPE%</th>
+        <th>得分</th><th>覆盖率%</th><th>偏差%</th></tr>`;
+      for (const r of rows)
+        html += `<tr><td>${r["截断点"] || ""}</td><td>${r["序列"] || ""}</td><td>${r.MAE != null ? r.MAE : ""}</td>
+          <td>${r["MAPE%"] != null ? r["MAPE%"] : ""}</td><td>${r["得分"] != null ? r["得分"] : ""}</td>
+          <td>${r["覆盖率%"] != null ? r["覆盖率%"] : ""}</td><td>${r["偏差%"] != null ? r["偏差%"] : ""}</td></tr>`;
+      html += "</table>";
+      const sm = d.diag.summary;
+      if (sm) html += `<div class="detail" style="margin-top:10px">
+        平均得分 <b>${sm["平均得分"] || "?"}</b> · 平均偏差 ${sm["平均偏差%"] || "?"}% ·
+        置信度 <b>${sm["置信度"] || "?"}</b> · ${sm["建议"] || ""}</div>`;
+      diag.innerHTML = html;
+    } else {
+      diag.innerHTML = "历史不足,无法诊断";
+    }
+    document.getElementById("card-diag").style.display = "";
+    if (chart) chart.resize();
+  } catch (e) {
+    console.error("renderResult error:", e);
+    document.getElementById("card-chart").style.display = "";
+    document.getElementById("chart").innerHTML =
+      `<div class="empty">数据渲染出错: ${e.message}。请尝试其他小区或刷新页面。</div>`;
+  }
+}
+window.addEventListener("resize", () => {
+  const c = echarts.getInstanceByDom(document.getElementById("chart"));
+  if (c) c.resize();
+});
+
+/* ---------- 训练(真实进度,平滑轮询) ---------- */
+async function startTrain() {
+  const btn = document.getElementById("btn-train");
+  btn.disabled = true;
+  const tp = document.getElementById("train-progress"), tb = document.getElementById("train-bar"),
+        tt = document.getElementById("train-text"), tpct = document.getElementById("train-pct"),
+        tm = document.getElementById("train-msg");
+  tp.style.display = ""; tm.innerHTML = "";
+  const r = await fetch("/api/train", { method: "POST" });
+  if (!r.ok) { tm.innerHTML = "训练已在运行中,请等待完成"; btn.disabled = false; return; }
+  const poll = setInterval(async () => {
+    const s = await (await fetch("/api/train_progress")).json();
+    const pct = s.total > 0 ? Math.min(99, Math.round(s.done / s.total * 100)) : 0;
+    tb.classList.remove("indet");
+    tb.style.width = pct + "%";
+    tt.textContent = s.stage;
+    tpct.textContent = pct > 0 ? pct + "%" : "";
+    if (s.stage === "完成" || s.stage === "失败") {
+      clearInterval(poll);
+      tb.style.width = "100%";
+      tpct.textContent = "100%";
+      tm.innerHTML = `<span style="color:${s.stage === "完成" ? "var(--green)" : "var(--red)"}">
+        ${s.msg || s.stage}</span>`;
+      btn.disabled = false;
+      setTimeout(() => { tp.style.display = "none"; }, 4000);
+    }
+  }, 700);
+}
+
+/* ---------- 模型信息 ---------- */
+async function loadModelInfo() {
+  const el = document.getElementById("model-info");
+  try {
+    const s = await (await fetch("/api/train_progress")).json();
+    el.innerHTML = s.running
+      ? `<span class="spinner"></span> 训练进行中: ${s.stage} (${s.done}/${s.total})`
+      : `当前模型: 最近一次训练 ${s.stage === "完成" ? "已完成" : "状态未知"} · ${s.msg || ""}`;
+  } catch (e) { el.innerHTML = "无法获取模型信息"; }
+}
+</script>
+</body>
+</html>

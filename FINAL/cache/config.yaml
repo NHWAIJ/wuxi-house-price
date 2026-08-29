@@ -1,0 +1,90 @@
+# ============================================================
+# 无锡住宅房价预测系统 — 全局配置
+# 所有可调参数集中管理,修改后重新运行即可生效
+# ============================================================
+
+# --- 训练参数 ---
+train:
+  # bootstrap 轮数(100 = 100 个集成模型,降低可调至 60 加快训练)
+  rounds: 100
+  # 每轮树数
+  n_estimators: 500
+  # 时间衰减半衰期(月):24 个月前的样本权重约为近期的一半
+  half_life: 24
+  # 小区最少历史月数(少于该值跳过)
+  min_history: 12
+  # 训练截断点(此日期之后的数据不参与训练)
+  cutoff: "2024-08-31"
+  # 最高强度模型配置
+  high_cfg:
+    rf_depth: 5
+    gbr_depth: 4
+    lr: 0.02
+    min_leaf: 3
+  # 并行进程数(auto = 自动检测 CPU 核数)
+  n_jobs: auto
+
+# --- 模型默认参数 ---
+models:
+  # 验证窗(月)
+  horizon: 12
+  # 多轮训练/预测轮数
+  n_rounds: 30
+  # walk-forward 步长(月)
+  walk_step: 6
+  # 默认模型超参数
+  default:
+    n_estimators: 400
+    rf_depth: 4
+    gbr_depth: 3
+    lr: 0.03
+    min_leaf: 4
+
+# --- 预测参数 ---
+predict:
+  # 正式预测终点(年月)
+  forecast_end: "2031-12"
+  # 预测月数(从当前起算)
+  forecast_months: 66
+  # 区间置信度分位数(25,75 = 50% 区间)
+  interval_quantiles: [25, 75]
+  # 区间缩放系数
+  interval_scale: 0.5
+  # bootstrap 轮数
+  n_rounds: 30
+  # 三情景趋势衰减半衰期(月)
+  scenarios:
+    baseline: 36
+    optimistic: 18
+    pessimistic: 72
+
+# --- 诊断参数 ---
+diagnose:
+  # 诊断截断点数量
+  n_cutoffs: 4
+  # 每个截断点预测月数
+  n_window: 12
+
+# --- 漂移检测 ---
+drift:
+  # 高漂移阈值(边缘度 %)
+  high_threshold: 5
+  # 中漂移阈值(边缘度 %)
+  medium_threshold: 15
+  # 最少样本月数
+  min_samples: 13
+  # 最少分布样本数
+  min_dist_samples: 10
+
+# --- 测试参数 ---
+test:
+  # 截断点
+  cutoff: "2024-08-31"
+  # 预测月数
+  n_months: 22
+  # bootstrap 轮数
+  n_rounds: 30
+  # 主预测方法: Holt 趋势外推
+  use_holt_main: true
+  # 偏差校准开关
+  use_calibration: true

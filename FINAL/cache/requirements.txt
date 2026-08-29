@@ -1,0 +1,15 @@
+# 无锡住宅房价预测系统 —— 依赖清单
+# 新电脑一键安装:  pip install -r requirements.txt
+# Python 版本要求: 3.9 及以上(64 位,本机 3.13 实测通过)
+# 无需 GPU(纯 CPU 训练,自动多核并行)
+
+pandas>=1.5
+numpy>=1.23
+scikit-learn>=1.2
+statsmodels>=0.13
+openpyxl>=3.1
+matplotlib>=3.6
+joblib>=1.2
+lightgbm>=4.0
+xgboost>=2.0
+flask>=3.0

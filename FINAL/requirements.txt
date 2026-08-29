@@ -1,0 +1,15 @@
+# 无锡住宅房价预测系统 — 依赖清单
+# Python 3.9+ (64-bit), 3.13 实测通过
+# 纯 CPU 训练,无需 GPU,自动多核并行
+
+pandas>=1.5
+numpy>=1.23
+scikit-learn>=1.2
+statsmodels>=0.13
+openpyxl>=3.1
+matplotlib>=3.6
+joblib>=1.2
+lightgbm>=3.3
+xgboost>=1.7
+flask>=2.0
+pyyaml>=5.4

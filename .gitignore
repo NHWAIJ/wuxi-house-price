@@ -1,0 +1,35 @@
+# 模型文件(2-3GB,不纳入版本控制)
+FINAL/cache/models/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 对比图产物(可自动生成)
+FINAL/cache/comparison/
+
+# 历史走势图(可自动生成)
+FINAL/cache/charts/
+
+# 输出表格(可自动生成)
+FINAL/cache/output/
+
+# 运行日志
+FINAL/cache/logs/
+*.log
+
+# 安装包产物
+FINAL/cache/dist_setup/*.exe
+
+# 已删除文件备份
+FINAL/cache/_deleted/
+
+# 系统文件
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# 临时文件
+thesis_extracted.txt
+_*.py
