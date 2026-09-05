@@ -3,7 +3,8 @@
 # Python 版本要求: 3.9 及以上(64 位,本机 3.13 实测通过)
 # 无需 GPU(纯 CPU 训练,自动多核并行)
 
-pandas>=1.5
+# pandas>=2.2:代码使用 freq="ME"(月末)写法,1.x/2.0/2.1 会报 Invalid frequency
+pandas>=2.2
 numpy>=1.23
 scikit-learn>=1.2
 statsmodels>=0.13
@@ -13,3 +14,4 @@ joblib>=1.2
 lightgbm>=4.0
 xgboost>=2.0
 flask>=3.0
+pyyaml>=5.4

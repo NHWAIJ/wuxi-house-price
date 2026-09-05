@@ -110,8 +110,8 @@ for f in sorted(os.listdir(ALL)):
         report["backup"].append((f, "ALL-数据不足"))
         continue
     b = auto_bucket(sh)
-    if b != "06_regular" or True:    # 全部归入子目录(regular 也单独放)
-        shutil.move(p, os.path.join(ALL, b, f))
+    # 全部归入子目录(regular 也单独放,保持 ALL 下只有分类子目录)
+    shutil.move(p, os.path.join(ALL, b, f))
     report["all_to"][f] = b
 
 # ---------- 3) 删除空的新增文件夹 ----------

@@ -1,0 +1,18 @@
+# 大文件与产物不进镜像(镜像体积/构建速度)
+models/
+comparison/
+output/
+logs/
+charts/
+dist_setup/
+_deleted/
+defense_deliverables/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 临时与备份
+*.tmp
+*.bak
+thesis_extracted.txt

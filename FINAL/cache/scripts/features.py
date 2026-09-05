@@ -53,19 +53,27 @@ FEATURE_COLS = [
 
 # ---------------------------------------------------------------- 事件打分
 
+# 「放松/放宽/解除/取消/松绑」+ 限制类名词 = 政策宽松(正面),负面计数时需跳过这类组合
+RELAX_VERBS = ("放松", "放宽", "解除", "取消", "松绑", "优化")
+
+
 def score_event(text, category=""):
     """事件文本 → 方向分(截断到 ±3)。项目节点类事件(开盘/交付等)默认 0,避免干扰二手预测。
-    修复子串冲突:先匹配正面短语并从文本移除,再匹配负面词——
-    避免"取消限购/放松限购"同时命中负面词"限购"而互相抵消。"""
+    修复:正面短语(如"放松限购")被移除后残留负面名词"限购",导致正负相抵为 0。
+    现改为:负面词计数时,跳过紧跟"放松/放宽/解除/取消"等动词的负面名词。"""
+    import re as _re
     if any(k in category for k in PROJECT_CATEGORY_KW):
         # 仅当文本明显含政策/金融词时仍计入
         if not any(k in text for k in ("政策", "贷款", "利率", "限购", "限售", "增值税", "首付")):
             return 0
     s = sum(1 for k in POS_KEYWORDS if k in text)
-    t = text
-    for k in sorted(POS_KEYWORDS, key=len, reverse=True):   # 长短语先移除
-        t = t.replace(k, "")
-    n = sum(1 for k in NEG_KEYWORDS if k in t)
+    n = 0
+    for k in NEG_KEYWORDS:
+        for m in _re.finditer(_re.escape(k), text):
+            pre = text[max(0, m.start() - 2):m.start()]
+            if any(pre.endswith(v) for v in RELAX_VERBS):
+                continue    # "放松限购"类 → 政策宽松,不计负面
+            n += 1
     return int(max(-3, min(3, s - n)))
 
 
@@ -258,9 +266,11 @@ def future_event_flow(events_series, scenario, n_months):
     """
     last = events_series.index.max()
     if pd.isna(last):
-        recent = pd.Series(dtype=float)
-    else:
-        recent = events_series[events_series.index > last - pd.offsets.DateOffset(months=12)]
+        # 无任何事件数据:返回全 0 未来事件流(起点取当天,下游 reindex 后不影响)
+        future_dates = pd.date_range(pd.Timestamp.now().normalize(),
+                                     periods=n_months, freq="ME")
+        return pd.Series(0.0, index=future_dates)
+    recent = events_series[events_series.index > last - pd.offsets.DateOffset(months=12)]
     future_dates = pd.date_range(last + pd.offsets.MonthEnd(1), periods=n_months, freq="ME")
     # 把最近12个月的月度净方向铺到未来(逐月循环)
     base = recent.reindex(pd.date_range(recent.index.min(), last, freq="ME")).fillna(0).values

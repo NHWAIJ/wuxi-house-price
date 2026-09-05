@@ -15,21 +15,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import pandas as pd
-import joblib
 
 from config_loader import CFG
 from load_data import load_complex, WORKBOOK_DIR
 from features import (build_events, load_extra_events, attach_events, build_price_features,
                       FEATURE_COLS, load_macro, build_macro_frame, MACRO_COLS,
                       load_attrs, ATTRIBUTE_COLS, ATTR_NUM)
-from forecast import targets_for, series_for_target, export as export_forecast
+from forecast import (targets_for, series_for_target, export as export_forecast,
+                      interval_bands, holt_main_predict,
+                      INTERVAL_QUANTILES, INTERVAL_SCALE)
 from plot_monthly import draw as draw_history
 from plot_forecast import draw as draw_forecast
 from run_test import (CUTOFF, N_MONTHS, eval_series, calc_bias_ratio, calibration_factor,
                       USE_CALIBRATION, append_metrics, append_score_table,
                       export_comparison, plot_comparison, OUTPUT_DIR, METRICS_FILE,
                       next_run_folder, _make_progress as _mk_progress)
-from train_all import MODEL_FILE, build_pooled, load_all_complexes
+from train_all import load_all_complexes
+from models import _row_price_features
 from drift import build_train_distribution, drift_assessment, drift_message
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -40,8 +42,6 @@ CHARTS_DIR = os.path.join(ROOT, "charts")
 # ---- 从集中配置读取预测参数 ----
 _PC = CFG["predict"]
 FORECAST_END = _PC["forecast_end"]
-INTERVAL_QUANTILES = tuple(_PC["interval_quantiles"])
-INTERVAL_SCALE = _PC["interval_scale"]
 SCENARIOS = _PC["scenarios"]
 
 # 预测目标:data/test 下的小区(测试集,原两个:北控/帝泊湾)
@@ -142,7 +142,7 @@ def pooled_predict(target_series, mean_price, cid, models, events, n, seed=2026,
     for r, ens in enumerate(models):
         # 每模型各自 bootstrap 训练集已在训练阶段确定;预测时直接用该模型
         for pos in fut_idx:
-            row = _row_pooled_features(comb, pos, mean_price)
+            row = _row_price_features(comb, pos)
             for k, v in row.items():
                 comb.loc[pos, k] = v
             X_next = comb.loc[pos, feat_cols].values.reshape(1, -1)
@@ -155,91 +155,6 @@ def pooled_predict(target_series, mean_price, cid, models, events, n, seed=2026,
     out = pd.DataFrame(pred_cols)
     out.insert(0, "date", future.strftime("%Y-%m"))
     return out
-
-
-def _row_pooled_features(comb, pos, mean_price):
-    """目标小区 pos 行特征(标准化域;complex_id 固定)。与单小区版本口径一致。"""
-    p = comb["price"].values
-    f = {}
-
-    def pv(i):
-        return p[i] if 0 <= i < len(p) else np.nan
-
-    for lag in (1, 3, 6, 12):
-        f[f"p_lag{lag}"] = pv(pos - lag)
-        if pos - lag - 1 >= 0 and p[pos - lag - 1]:
-            f[f"r_lag{lag}"] = p[pos - lag] / p[pos - lag - 1] - 1
-        else:
-            f[f"r_lag{lag}"] = np.nan
-    seg6 = p[max(0, pos - 6):pos]
-    seg12 = p[max(0, pos - 12):pos]
-    f["ma6"] = seg6.mean() if len(seg6) else np.nan
-    f["ma12"] = seg12.mean() if len(seg12) else np.nan
-    seg13 = p[max(0, pos - 13):pos]
-    rets = np.diff(seg13) / seg13[:-1] if len(seg13) >= 3 else np.array([])
-    f["vol12"] = rets.std(ddof=1) if len(rets) >= 2 else np.nan
-    if pos > 0:
-        peak = float(np.max(p[:pos]))
-        f["dd_ratio"] = p[pos - 1] / peak if peak else 1.0
-        cands = np.where(p[:pos] >= peak * (1 - 1e-9))[0]
-        f["months_since_peak"] = float((pos - 1) - (cands[-1] if len(cands) else 0))
-    else:
-        f["dd_ratio"] = 1.0
-        f["months_since_peak"] = 0.0
-    f["t_idx"] = float(pos)
-    return f
-
-
-FORECAST_END = "2031-12"    # 正式预测终点
-
-# 区间置信度配置:(lo_q, hi_q) = 误差分位数。
-#   默认 (25, 75) = 50% 区间(实测:北控/帝泊湾覆盖率仍 100%,宽度 -15%~-23%,
-#   图带子更清爽;得分不受影响)。想更宽改回 (10, 90) = 80% 区间;
-#   更窄 (35, 65) = 30% 区间(注意:帝泊湾 30% 时覆盖率降至 88%)。
-INTERVAL_QUANTILES = (25, 75)
-INTERVAL_SCALE = 0.5
-# 区间缩放系数:50% 区间 × 0.5 = 视觉窄一半(北控 ±25%→±13%,帝泊湾 ±28%→±14%)。
-# 依据:全训练期误差被 2021-2022 高位波动期撑宽,真实测试误差仅 ±1.5-4%;
-# 实测缩放后帝泊湾覆盖率 62%(≈50% 语义,之前 100% 是过度保守),北控仍 100%。
-
-
-def interval_bands(series, horizon=12, walk_step=6, quantiles=None):
-    """
-    区间校准:训练期(≤截断点)内 walk-forward,按预测步长 h 收集外推误差
-    e = 真实 - P50(元),取每步的 10%/90% 分位数 → 数据驱动的 80% 区间边界。
-    修复:正态假设 ±1.28 下,帝泊湾实际覆盖率仅 12%(区间过窄)、北控 100%(过宽);
-    校准后两个小区的"80% 区间"应真正覆盖约 80% 的真实点。
-    返回 (e10_by_h, e90_by_h):dict {h: 元}。某步样本不足时用整体 10/90 分位兜底。
-    """
-    from models import fit_holt
-    y = series["price"].dropna().values
-    lo_q, hi_q = quantiles if quantiles else INTERVAL_QUANTILES
-    errs = {h: [] for h in range(1, horizon + 1)}
-    for cut in range(12, len(y) - horizon, walk_step):
-        try:
-            fit = fit_holt(y[:cut])
-            pred = np.asarray(fit.forecast(horizon))
-            real = y[cut:cut + horizon]
-            for h in range(1, min(horizon, len(real)) + 1):
-                errs[h].append(real[h - 1] - pred[h - 1])
-        except Exception:
-            continue
-    all_e = [e for h in errs for e in errs[h]]
-    if len(all_e) >= 5:
-        # 对称分位:用 |误差| 的分位数,避免不对称误差分布导致区间整体偏移
-        # (实测:北控误差右偏,非对称分位区间偏上,覆盖率 100%→14%)
-        f_hi = float(np.percentile(np.abs(all_e), hi_q))
-        fallback = (-f_hi, f_hi)
-    else:
-        fallback = (-float(np.std(y, ddof=1)), float(np.std(y, ddof=1)))
-    e10, e90 = {}, {}
-    for h in range(1, horizon + 1):
-        if len(errs[h]) >= 5:
-            q_lo, q_hi = np.percentile(errs[h], [lo_q, hi_q])
-            e10[h], e90[h] = float(q_lo), float(q_hi)
-        else:
-            e10[h], e90[h] = fallback
-    return e10, e90
 
 
 def months_to_end(last_date, end=FORECAST_END):
@@ -279,10 +194,12 @@ def holt_damped_predict(series, n, warm_months=22, slope_half_life=36,
     p50 = trend + seas_adj
     # 区间校准:第 12 步分位数误差带按 √(h/12) 扩张(长期不确定性增长)
     e10, e90 = interval_bands(series, quantiles=quantiles)
+    e12 = e10.get(12) or next(iter(e10.values()), 0.0)
+    e12_hi = e90.get(12) or next(iter(e90.values()), 0.0)
     # 区间扩张封顶 √(h/12) ≤ 2.0(长期不确定性不无限放大;修复帝泊湾 64 月下界为负)
     grow = np.minimum(np.sqrt(np.arange(1, n + 1) / 12), 2.0)
-    lo = e10[12] * grow
-    hi = e90[12] * grow
+    lo = e12 * grow
+    hi = e12_hi * grow
     return pd.DataFrame({
         "date": future_dates.strftime("%Y-%m"),
         "P10": p50 + lo * INTERVAL_SCALE,
@@ -310,52 +227,22 @@ def formal_forecast(c, scenarios=False):
     scen_out = {}
     for t in targets_for(old):
         series = series_for_target(old, t)
-        n = months_to_end(series["date"].max())
-        result[t] = holt_damped_predict(series, n)
+        try:
+            n = months_to_end(series["date"].max())
+            result[t] = holt_damped_predict(series, n)
+        except Exception:
+            continue   # 历史不足(Holt 需 ≥8 观测)的小区跳过该序列
         if scenarios:
             scen_out[t] = {}
             for sname, hl in SCENARIOS.items():
                 df = holt_damped_predict(series, n, slope_half_life=hl)
                 scen_out[t][sname] = dict(zip(df["date"], df["P50"]))
+    if not result:
+        raise RuntimeError("该小区无有效价格序列,无法预测")
     result["_meta"] = {"targets": targets_for(old), "beta": {}}
     if scenarios:
         result["_scenarios"] = scen_out
     return result
-
-
-def holt_main_predict(series, n, quantiles=None):
-    """
-    Holt 趋势外推 + 季节形态叠加(与 run_test.py USE_HOLT_MAIN 一致):
-      P50 = Holt 直线 + 历史月度季节因子(残差按月均值,3 个月平滑);
-      区间 = 训练期标准化误差 10/90 分位数(区间校准,替代正态假设 ±1.28)。
-    实证:对持续单边趋势小区(北控/帝泊湾)远优于联合模型外推——北控 +31% 高估 → +0.9%。
-    """
-    from models import fit_holt
-    fit = fit_holt(series["price"].values)
-    holt = np.asarray(fit.forecast(n))
-    resid = series["price"].values - np.asarray(fit.fittedvalues)
-    # 季节因子:按月份分组的残差均值(3 个月平滑防单月噪声)
-    s_tmp = series.copy()
-    s_tmp["_m"] = s_tmp["date"].dt.month
-    s_tmp["_r"] = resid
-    season = s_tmp.groupby("_m")["_r"].mean().rolling(3, min_periods=1, center=True).mean()
-    future_dates = pd.date_range(series["date"].max() + pd.offsets.MonthEnd(1),
-                                 periods=n, freq="ME")
-    seas_adj = np.array([season.get(m, 0.0) for m in future_dates.month])
-    p50 = holt + seas_adj
-    # 区间校准:按步长 h 的分位数误差带;h>12 用第 12 步尺度按 √(h/12) 扩张
-    e10, e90 = interval_bands(series, quantiles=quantiles)
-    lo = np.array([e10[min(h, 12)] * np.sqrt(max(h, 1) / 12) if h > 12 else e10[h]
-                   for h in range(1, n + 1)])
-    hi = np.array([e90[min(h, 12)] * np.sqrt(max(h, 1) / 12) if h > 12 else e90[h]
-                   for h in range(1, n + 1)])
-    return pd.DataFrame({
-        "date": future_dates.strftime("%Y-%m"),
-        "P10": p50 + lo * INTERVAL_SCALE,
-        "P50": p50,
-        "P90": p50 + hi * INTERVAL_SCALE,
-        "mean": p50,
-    })
 
 
 def main():
@@ -364,11 +251,13 @@ def main():
     run_with_progress(main_impl, _mk_progress, title="预测运行中")
 
 
-def main_impl(pw=None, events=None, macro=None, base_pct=0.0, span=100.0):
+def main_impl(pw=None, events=None, macro=None, complexes=None,
+              base_pct=0.0, span=100.0):
     """预测主流程(worker 线程内执行)。参数:
       pw: 进度窗口(独立运行由 run_with_progress 创建;run_joint 传入共享窗口);
       events: 外部事件序列(训练阶段已构建;None 则自行构建);
       macro: 宏观月度数据(训练阶段已构建;None 则自行加载);
+      complexes: 训练小区列表(训练阶段已解析;None 则自行解析,供漂移分布复用);
       base_pct/span: 进度偏移与跨度(供 run_joint 拼接 50-100%)。
     """
     last_pct = [0]
@@ -391,21 +280,22 @@ def main_impl(pw=None, events=None, macro=None, base_pct=0.0, span=100.0):
     report("Holt 主预测模式:目标小区趋势外推 + 季节叠加", 2,
            "联合模型仍用于 ALL 小区预测,不受影响")
 
-    # 事件:外部传入(训练阶段已构建)或自行构建
+    # 事件:外部传入(训练阶段已构建)或自行构建(复用传入的训练小区,避免重复解析)
     if events is None:
-        from train_all import load_all_complexes
-        complexes_all = load_all_complexes()
-        all_ev = pd.concat([c["events"] for c in complexes_all if c["events"] is not None],
+        if complexes is None:
+            complexes = load_all_complexes()
+        all_ev = pd.concat([c["events"] for c in complexes if c["events"] is not None],
                            ignore_index=True)
         events = build_events(all_ev, load_extra_events())
     events = events[events.index <= CUTOFF]
     report(f"事件截断:{len(events)} 条(≤2024.08)", 4)
 
-    # 漂移检测:训练集行情分布(一次构建,各小区复用)
+    # 漂移检测:训练集行情分布(复用已解析的小区,避免二次全量解析)
     drift_dist = None
     try:
-        comps_all = load_all_complexes()
-        drift_dist = build_train_distribution(comps_all, macro)
+        if complexes is None:
+            complexes = load_all_complexes()
+        drift_dist = build_train_distribution(complexes, macro)
     except Exception as e:
         print(f"  ⚠ 漂移分布构建失败({e}),跳过漂移检测")
 
@@ -440,7 +330,10 @@ def main_impl(pw=None, events=None, macro=None, base_pct=0.0, span=100.0):
         preds = {}
         for t in targets_for(old):
             series = series_for_target(train, t)   # 原始价格域
-            preds[t] = holt_main_predict(series, N_MONTHS)
+            try:
+                preds[t] = holt_main_predict(series, N_MONTHS)
+            except Exception as e:
+                print(f"  ⚠ {name} {t}:历史不足,跳过预测({e})")
 
         # 偏差校准:Holt 主预测模式下跳过(趋势外推偏差已很小,校准可能画蛇添足——
         # 北控训练期偏差 -7.6% 但测试期高估 +31%,方向相反,校准会帮倒忙)

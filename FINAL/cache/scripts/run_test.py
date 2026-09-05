@@ -166,7 +166,10 @@ def append_score_table():
 
     if not os.path.exists(METRICS_FILE):
         return None
-    src = load_workbook(METRICS_FILE)["打分"]
+    try:
+        src = load_workbook(METRICS_FILE)["打分"]
+    except (KeyError, IndexError):
+        return None   # 主表存在但缺「打分」sheet → 暂无可重建数据
     rows = []
     for r in src.iter_rows(min_row=2, values_only=True):
         if not r or r[0] is None:
@@ -228,8 +231,20 @@ def append_metrics(rows, feature_shares):
 
     if os.path.exists(METRICS_FILE):
         wb = load_workbook(METRICS_FILE)
-        ws = wb["打分"]
-        start = ws.max_row + 1
+        if "打分" not in wb.sheetnames:
+            ws = wb.create_sheet("打分")
+            for j, h in enumerate(["运行时间", "小区", "序列", "MAE", "RMSE", "MAPE%",
+                                   "得分(0-100)", "区间覆盖率%", "样本数",
+                                   "真实均值", "预测P50均值"], 1):
+                cell = ws.cell(1, j, h)
+                cell.font = hfont
+                cell.alignment = center
+                cell.border = border
+            ws.row_dimensions[1].height = 15.5
+            start = ws.max_row + 1
+        else:
+            ws = wb["打分"]
+            start = ws.max_row + 1
     else:
         wb = Workbook()
         ws = wb.active
@@ -554,32 +569,15 @@ def run(pw=None):
                        48 + 45 * done[0] / total_steps, None)
 
             if USE_HOLT_MAIN:
-                # Holt 趋势外推 + 季节形态叠加(方案B):
-                #   P50 = Holt 直线 + 历史月度季节因子(残差按月均值,如"3月通常高于趋势线X元"),
-                #   保留趋势准确性,同时预测呈现历史规律性的起伏;
-                #   区间 = 训练期残差 std ±1.28(80%)。
-                from models import fit_holt
-                fit = fit_holt(series["price"].values)
-                holt = np.asarray(fit.forecast(N_MONTHS))
-                resid = series["price"].values - np.asarray(fit.fittedvalues)
-                rstd = float(np.std(resid, ddof=1))
-                # 季节因子:按月份分组的残差均值(3 个月平滑防单月噪声)
-                s_tmp = series.copy()
-                s_tmp["_m"] = s_tmp["date"].dt.month
-                s_tmp["_r"] = resid
-                season = s_tmp.groupby("_m")["_r"].mean()
-                season = season.rolling(3, min_periods=1, center=True).mean()
-                future_dates = pd.date_range(series["date"].max() + pd.offsets.MonthEnd(1),
-                                             periods=N_MONTHS, freq="ME")
-                seas_adj = np.array([season.get(m, 0.0) for m in future_dates.month])
-                p50 = holt + seas_adj
-                preds[t] = pd.DataFrame({
-                    "date": future_dates.strftime("%Y-%m"),
-                    "P10": p50 - 1.28 * rstd,
-                    "P50": p50,
-                    "P90": p50 + 1.28 * rstd,
-                    "mean": p50,
-                })
+                # Holt 趋势外推 + 季节叠加(与正式预测 forecast.holt_main_predict 同一口径):
+                #   P50 = Holt 直线 + 历史月度季节因子;区间 = 训练期分位数校准。
+                # 修复:原先 run_test 用固定 ±1.28×rstd 而正式预测用分位校准,
+                # 评估口径 ≠ 预测口径,打分表覆盖率与线上展示不一致。
+                from forecast import holt_main_predict
+                try:
+                    preds[t] = holt_main_predict(series, N_MONTHS)
+                except Exception as e:
+                    print(f"  ⚠ {name} {t}:历史不足,跳过预测({e})")
             else:
                 rounds_df = recursive_forecast(series, events, "基准", n=N_MONTHS,
                                                rounds=N_ROUNDS, seed=seed, on_round=_cb)

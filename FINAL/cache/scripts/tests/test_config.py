@@ -32,7 +32,7 @@ def test_train_config_has_required_keys():
 
 
 def test_predict_config():
-        """预测配置应包含所有必需键。"""
+    """预测配置应包含所有必需键。"""
     pc = _DEFAULTS["predict"]
     for key in ["forecast_end", "forecast_months", "interval_quantiles",
                  "interval_scale", "n_rounds", "scenarios"]:

@@ -12,7 +12,9 @@ forecast.py — 基准情景 × 多轮递归预测,输出逐月预测明细(预�
 表格输出目录:ROOT/output/  (独立于代码与原始数据)
 """
 import os
+import re
 
+import numpy as np
 import pandas as pd
 
 from config_loader import CFG
@@ -26,6 +28,81 @@ OUTPUT_DIR = os.path.join(ROOT, "output")
 _PC = CFG["predict"]
 FORECAST_MONTHS = _PC["forecast_months"]
 N_ROUNDS = _PC["n_rounds"]
+INTERVAL_QUANTILES = tuple(_PC["interval_quantiles"])
+INTERVAL_SCALE = _PC["interval_scale"]
+
+
+def interval_bands(series, horizon=12, walk_step=6, quantiles=None):
+    """
+    区间校准:训练期(≤截断点)内 walk-forward,按预测步长 h 收集外推误差
+    e = 真实 - P50(元),取每步的分位数 → 数据驱动的区间边界。
+    某步样本不足时用整体分位兜底(按 |误差| 的对称分位,避免区间整体偏移)。
+    返回 (e10_by_h, e90_by_h):dict {h: 元}。
+    """
+    from models import fit_holt
+    y = series["price"].dropna().values
+    lo_q, hi_q = quantiles if quantiles else INTERVAL_QUANTILES
+    errs = {h: [] for h in range(1, horizon + 1)}
+    for cut in range(12, len(y) - horizon, walk_step):
+        try:
+            fit = fit_holt(y[:cut])
+            pred = np.asarray(fit.forecast(horizon))
+            real = y[cut:cut + horizon]
+            for h in range(1, min(horizon, len(real)) + 1):
+                errs[h].append(real[h - 1] - pred[h - 1])
+        except Exception:
+            continue
+    all_e = [e for h in errs for e in errs[h]]
+    if len(all_e) >= 5:
+        f_hi = float(np.percentile(np.abs(all_e), hi_q))
+        fallback = (-f_hi, f_hi)
+    else:
+        fallback = (-float(np.std(y, ddof=1)), float(np.std(y, ddof=1)))
+    e10, e90 = {}, {}
+    for h in range(1, horizon + 1):
+        if len(errs[h]) >= 5:
+            q_lo, q_hi = np.percentile(errs[h], [lo_q, hi_q])
+            e10[h], e90[h] = float(q_lo), float(q_hi)
+        else:
+            e10[h], e90[h] = fallback
+    return e10, e90
+
+
+def holt_main_predict(series, n, quantiles=None):
+    """
+    Holt 趋势外推 + 季节形态叠加(评估与正式预测共用同一口径):
+      P50 = Holt 直线 + 历史月度季节因子(残差按月均值,3 个月平滑);
+      区间 = 训练期标准化误差分位数(区间校准,替代正态假设 ±1.28)。
+    实证:对持续单边趋势小区(北控/帝泊湾)远优于联合模型外推。
+    """
+    from models import fit_holt
+    fit = fit_holt(series["price"].values)
+    holt = np.asarray(fit.forecast(n))
+    resid = series["price"].values - np.asarray(fit.fittedvalues)
+    # 季节因子:按月份分组的残差均值(3 个月平滑防单月噪声)
+    s_tmp = series.copy()
+    s_tmp["_m"] = s_tmp["date"].dt.month
+    s_tmp["_r"] = resid
+    season = s_tmp.groupby("_m")["_r"].mean().rolling(3, min_periods=1, center=True).mean()
+    future_dates = pd.date_range(series["date"].max() + pd.offsets.MonthEnd(1),
+                                 periods=n, freq="ME")
+    seas_adj = np.array([season.get(m, 0.0) for m in future_dates.month])
+    p50 = holt + seas_adj
+    # 区间校准:按步长 h 的分位数误差带;h>12 用第 12 步尺度按 √(h/12) 扩张
+    e10, e90 = interval_bands(series, quantiles=quantiles)
+    e12 = e10.get(12) or next(iter(e10.values()), 0.0)
+    e12_hi = e90.get(12) or next(iter(e90.values()), 0.0)
+    lo = np.array([e10.get(h, e12 * np.sqrt(h / 12)) * np.sqrt(max(h, 1) / 12) if h > 12
+                   else e10.get(h, e12) for h in range(1, n + 1)])
+    hi = np.array([e90.get(h, e12_hi * np.sqrt(h / 12)) * np.sqrt(max(h, 1) / 12) if h > 12
+                   else e90.get(h, e12_hi) for h in range(1, n + 1)])
+    return pd.DataFrame({
+        "date": future_dates.strftime("%Y-%m"),
+        "P10": p50 + lo * INTERVAL_SCALE,
+        "P50": p50,
+        "P90": p50 + hi * INTERVAL_SCALE,
+        "mean": p50,
+    })
 
 
 def series_for_target(old, target):
@@ -119,7 +196,9 @@ def export_xlsx(name, out, dates, result=None):
 
     wb = Workbook()
     ws = wb.active
-    ws.title = f"predictions_{name}"[:31]
+    # Excel 非法字符清洗([]:*?/\)——特殊小区名(如含"/")会抛异常
+    sheet_name = re.sub(r"[\[\]:*?/\\]", "_", f"predictions_{name}")[:31] or "predictions"
+    ws.title = sheet_name
 
     thin = Side(style="thin")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)

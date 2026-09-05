@@ -10,18 +10,16 @@ target_diagnose.py — 目标小区诊断模式(对应工作流:截断→预测�
 """
 import os
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import numpy as np
 import pandas as pd
 
 from config_loader import CFG
 from load_data import load_complex, WORKBOOK_DIR
-from forecast import targets_for, series_for_target
+from forecast import targets_for, series_for_target, holt_main_predict
 from run_test import eval_series, _make_progress as _mk_progress
-from predict import holt_main_predict, formal_forecast, FORECAST_END
+from predict import formal_forecast, FORECAST_END
 from predict import export_forecast, cleanup_charts, cleanup_output
 from train_all import load_all_complexes
 from drift import build_train_distribution, drift_assessment, drift_message

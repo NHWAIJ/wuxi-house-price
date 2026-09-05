@@ -88,6 +88,24 @@ def train_parallel(Xv, yv, wv, rounds, cfg, on_done=None, n_jobs=None):
     return results
 
 
+def save_model(payload, path=MODEL_FILE):
+    """
+    原子保存模型:先写 .tmp 再 os.replace(避免训练中断留下损坏文件),
+    并把上一版模型保留为 .bak 供回滚。
+    """
+    if os.path.exists(path):
+        bak = path + ".bak"
+        try:
+            if os.path.exists(bak):
+                os.remove(bak)
+            os.replace(path, bak)
+        except OSError:
+            pass
+    tmp = path + ".tmp"
+    joblib.dump(payload, tmp)
+    os.replace(tmp, path)
+
+
 def _make_progress():
     if os.environ.get("BK_NO_GUI"):
         return None
@@ -239,6 +257,14 @@ def main_impl(pw=None, resume=False, add_rounds=20):
     complexes = load_all_complexes()
     report(f"解析完成:{len(complexes)} 个小区", 6, f"{[c['name'] for c in complexes][:5]} …")
 
+    # 数据校验:新数据进训练集前自动检查(格式/价格合理性/历史月数)
+    try:
+        from validate_data import validate_all, print_validation_report
+        issues_map = validate_all(complexes)
+        print_validation_report(issues_map)
+    except Exception as e:
+        print(f"  ⚠ 数据校验跳过({e})")
+
     # 增量训练:加载已有模型,对比小区数
     existing = None
     if resume and os.path.exists(MODEL_FILE):
@@ -288,12 +314,11 @@ def main_impl(pw=None, resume=False, add_rounds=20):
         all_models = new_models
         merged_n_rounds = n_rounds
 
-    # 保存模型 + meta
-    joblib.dump({"models": all_models, "meta": meta, "feature_cols": x_cols,
-                 "has_macro": bool(macro), "attr_info": attr_info,
-                 "n_rounds": merged_n_rounds, "cfg": HIGH_CFG,
-                 "trained_at": time.strftime("%Y-%m-%d %H:%M")},
-                MODEL_FILE)
+    # 保存模型 + meta(原子写 + 保留上一版 .bak 回滚)
+    save_model({"models": all_models, "meta": meta, "feature_cols": x_cols,
+                "has_macro": bool(macro), "attr_info": attr_info,
+                "n_rounds": merged_n_rounds, "cfg": HIGH_CFG,
+                "trained_at": time.strftime("%Y-%m-%d %H:%M")})
     report("训练完成,模型已保存", 96, f"模型 → {MODEL_FILE}")
     duration = time.time() - t0
     print(f"\n训练完成: {len(complexes)} 个小区,{len(X)} 行样本,{merged_n_rounds} 个集成模型"
@@ -315,10 +340,10 @@ def main_impl(pw=None, resume=False, add_rounds=20):
         notes=f"特征列数: {len(x_cols)}",
     )
 
-    # 训练完成后自动进入预测
+    # 训练完成后自动进入预测(复用已解析的小区/事件/宏观,避免重复加载)
     print("\n→ 开始预测(对原两个小区做 2024.09 起测试预测)…\n")
     from predict import main_impl as predict_main
-    predict_main(pw=pw)
+    predict_main(pw=pw, events=events, macro=macro, complexes=complexes)
 
     if pw is not None:
         pw.done([f"联合模型 → {MODEL_FILE}",

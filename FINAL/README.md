@@ -33,6 +33,7 @@ D:\BK\
     │   ├── web\                        网页应用(Flask 后端 + 前端页面)
     │   │   ├── templates\
     │   │   │   └── index.html
+    │   │   ├── static\js\              前端依赖本地副本(echarts/pinyin-pro,离线可用)
     │   │   └── app.py
     │   ├── models\                     联合模型(ensemble_all.joblib,约 2-3GB,训练产物)
     │   ├── charts\                     历史走势图(自动清理)
@@ -54,10 +55,12 @@ D:\BK\
     ├── train.bat                       训练 + 自动预测(10-12 分钟)
     ├── predict.bat                     直接预测(1-2 分钟)
     ├── diagnose.bat                    目标小区诊断(多截断点)+ 正式预测
-    ├── test.bat                        随机小区测试
+    ├── test.bat                        测试集打分(北控/帝泊湾)
     ├── web.bat                         网页演示(自动打开浏览器)
+    ├── collect_final.bat               同步正式运行包(04_code/)
     ├── 编译安装包.bat                  编译安装包(Inno Setup)
     ├── Dockerfile                      容器化(一行命令构建 Docker 镜像)
+    ├── .dockerignore                   镜像排除清单(模型/产物不打包)
     ├── requirements.txt                依赖清单(根目录,供 Docker/新环境使用)
     └── _fix_thesis.py                  论文辅助脚本
 ```
@@ -104,6 +107,8 @@ pip install pandas numpy scikit-learn statsmodels openpyxl matplotlib joblib lig
 安装内容:pandas / numpy / scikit-learn / statsmodels / openpyxl / matplotlib / joblib / lightgbm / xgboost / flask。
 **不需要 GPU、不需要 CUDA**(训练自动多核并行,8 核约 10-12 分钟)。
 
+> 注意:**pandas 需 ≥ 2.2**(代码使用 `freq="ME"` 月末写法,低版本会报 Invalid frequency)。
+
 ### 3. 验证环境(依赖是否装好)
 
 ```PowerShell
@@ -123,7 +128,7 @@ python -c "import pandas, sklearn, statsmodels, openpyxl, matplotlib, lightgbm, 
 | 训练 + 自动预测 | 双击`train.bat`         | 10-12 分钟 | 新模型 + 打分表追加 + 对比图/预测图 |
 | 只预测(不重训)  | 双击`predict.bat`       | 1-2 分钟   | 打分表追加 + 对比图/预测图          |
 | 目标小区诊断    | 双击`diagnose.bat`      | 2-3 分钟   | 多截断点诊断(控制台)+ 预测表        |
-| 随机小区测试    | 双击`test.bat`          | 5-10 分钟  | 随机 5 个小区打分                   |
+| 测试集打分      | 双击`test.bat`          | 5-10 分钟  | 北控/帝泊湾打分(固定测试集)         |
 | 网页演示(答辩)  | 双击`web.bat`           | 秒级启动   | 浏览器:选小区→历史/预测/诊断/漂移  |
 | 同步正式包      | 双击`collect_final.bat` | 秒级       | 04_code/ 更新为最新 scripts + data  |
 
@@ -231,15 +236,15 @@ copy 某小区_价格数据表.xlsx data\test\
 ## 七、常见问题
 
 **Q: 训练要多久?**
-A: 8 核 CPU 约 10-12 分钟(100 轮 × 5 模型并行);核心越多越快。数据更多时可用记事本打开
-`scripts\train_all.py`,把 `TRAIN_ROUNDS = 100` 调成 60 可减半。
+A: 8 核 CPU 约 10-12 分钟(100 轮 × 5 模型并行);核心越多越快。数据更多时可在
+`cache\config.yaml` 把 `train.rounds` 调成 60 可减半。
 
 **Q: 预测要多久?**
-A: 1-2 分钟——主要耗时是解析 372 个训练小区构建漂移检测分布;Holt 预测本身为秒级。
+A: 1-2 分钟——主要耗时是解析 372 个训练小区构建漂移检测分布(训练后自动预测会复用已解析数据,更快);Holt 预测本身为秒级。
 
-**Q: 模型文件太大(2-3GB)?**
-A: 100 轮 × 500 棵树的产物。磁盘紧张可删 `models\ensemble_all.joblib`
-(下次 `train.bat` 会重新生成),或调低 `TRAIN_ROUNDS`。
+**Q: 模型文件太大?**
+A: 100 轮 × 500 棵树的产物(数百 MB)。磁盘紧张可删 `models\ensemble_all.joblib`
+(下次 `train.bat` 会重新生成),或调低 `cache\config.yaml` 的 `train.rounds`。
 
 **Q: 弹窗显示"未响应"?**
 A: 不会。进度窗口运行在独立线程,计算在主线程外进行,窗口始终可操作。
@@ -248,5 +253,5 @@ A: 不会。进度窗口运行在独立线程,计算在主线程外进行,窗口
 A: 依赖没装全,执行: `pip install pandas numpy scikit-learn statsmodels openpyxl matplotlib joblib lightgbm xgboost flask`
 
 **Q: 区间怎么调整?**
-A: 打开 `scripts\predict.py` 顶部,`INTERVAL_QUANTILES = (25, 75)` 为 50% 区间
-(改 `(10, 90)` 为 80% 区间),`INTERVAL_SCALE = 0.5` 为缩放系数。
+A: 编辑 `cache\config.yaml` 的 `predict.interval_quantiles`:`[25, 75]` 为 50% 区间
+(改 `[10, 90]` 为 80% 区间),`predict.interval_scale = 0.5` 为缩放系数。

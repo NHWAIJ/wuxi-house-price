@@ -83,14 +83,11 @@ _DEFAULTS = {
 
 def _find_config():
     """从脚本目录向上查找 config.yaml。"""
-    # 搜索路径优先级
+    # 搜索路径优先级:环境变量显式指定 > 脚本目录父目录(cache/) > 当前工作目录
     candidates = [
-        # 1. 脚本目录的父目录(cache/)
+        os.environ.get("BK_CONFIG", ""),
         os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                      "config.yaml"),
-        # 2. 环境变量指定
-        os.environ.get("BK_CONFIG", ""),
-        # 3. 当前工作目录
         os.path.join(os.getcwd(), "config.yaml"),
     ]
     for p in candidates:

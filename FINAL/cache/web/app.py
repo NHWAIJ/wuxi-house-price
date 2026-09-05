@@ -24,6 +24,10 @@ from target_diagnose import diagnose_one
 
 app = Flask(__name__)
 
+# 并发保护:预测/训练接口先同步置位再起线程,避免两个请求同时通过检查
+PRED_LOCK = threading.Lock()
+TRAIN_LOCK = threading.Lock()
+
 
 @app.after_request
 def no_cache(resp):
@@ -32,6 +36,12 @@ def no_cache(resp):
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
     return resp
+
+
+@app.route("/api/health")
+def api_health():
+    """健康检查(Docker HEALTHCHECK / 运维探活)。"""
+    return jsonify({"status": "ok", "loaded": bool(CACHE.get("loaded"))})
 
 # ---------------- 小区加载(线程化,真实进度) ----------------
 CACHE = {"loaded": False}
@@ -138,7 +148,8 @@ PRED_STATE = {"running": False, "stage": "", "pct": 0, "started_at": 0.0,
 
 def _predict_job(name):
     try:
-        PRED_STATE.update(running=True, name=name, msg="", result=None,
+        # running 已在 api 层同步置位;这里只需更新阶段
+        PRED_STATE.update(name=name, msg="", result=None,
                           stage="正在启动预测…", pct=1, started_at=time.time())
         # 1. 等待小区加载完成(若尚未加载)
         while not CACHE["loaded"]:
@@ -216,8 +227,11 @@ def _predict_job(name):
 @app.route("/api/predict", methods=["POST"])
 def api_predict():
     name = request.args.get("name", "")
-    if PRED_STATE["running"]:
-        return jsonify({"error": "已有预测在进行中"}), 409
+    with PRED_LOCK:
+        if PRED_STATE["running"]:
+            return jsonify({"error": "已有预测在进行中"}), 409
+        # 同步置位,避免两个并发请求同时通过检查(TOCTOU)
+        PRED_STATE.update(running=True, stage="排队中…", pct=0, name=name, msg="", result=None)
     ensure_loaded()
     threading.Thread(target=_predict_job, args=(name,), daemon=True).start()
     return jsonify({"ok": True})
@@ -243,12 +257,13 @@ TRAIN_STATE = {"running": False, "stage": "", "done": 0, "total": 0, "msg": ""}
 
 
 def _train_job():
-    import joblib
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from train_all import (build_pooled, train_parallel,
-                           MODEL_FILE, TRAIN_ROUNDS, HIGH_CFG)
+    import time as _t
+    from train_all import (build_pooled, train_parallel, save_model,
+                           MODEL_FILE, TRAIN_ROUNDS, HIGH_CFG, HALF_LIFE, N_JOBS)
     from features import build_events, load_extra_events, load_macro, load_attrs
     from load_data import load_complex
+    from experiment_tracker import log_experiment
+    _t0 = _t.time()
     try:
         TRAIN_STATE.update(running=True, stage="解析小区数据", done=0, total=1, msg="")
         TRAIN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -275,18 +290,25 @@ def _train_job():
                            ignore_index=True)
         events = build_events(all_ev, load_extra_events())
         macro, attrs = load_macro(), load_attrs()
-        TRAIN_STATE.update(stage="构建面板特征(39维)…", done=0, total=100)
+        TRAIN_STATE.update(stage="构建面板特征…", done=0, total=100)
         X, y, w, meta, x_cols, attr_info = build_pooled(complexes, events, macro, attrs)
         TRAIN_STATE.update(stage=f"并行训练 {TRAIN_ROUNDS} 轮 × 5 模型", done=0, total=TRAIN_ROUNDS)
         models = train_parallel(X.values, y.values, w.values, TRAIN_ROUNDS, HIGH_CFG,
                                 on_done=lambda d, t: TRAIN_STATE.update(done=d))
-        joblib.dump({"models": models, "meta": meta, "feature_cols": x_cols,
-                     "has_macro": bool(macro), "attr_info": attr_info,
-                     "n_rounds": TRAIN_ROUNDS, "cfg": HIGH_CFG,
-                     "trained_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")},
-                    MODEL_FILE)
+        save_model({"models": models, "meta": meta, "feature_cols": x_cols,
+                    "has_macro": bool(macro), "attr_info": attr_info,
+                    "n_rounds": TRAIN_ROUNDS, "cfg": HIGH_CFG,
+                    "trained_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")})
         TRAIN_STATE.update(stage="完成", done=TRAIN_ROUNDS,
                            msg=f"训练完成: {len(meta)} 个小区,模型已保存")
+        log_experiment(
+            run_type="train",
+            params={"n_complexes": len(complexes), "n_samples": len(X),
+                    "train_rounds": TRAIN_ROUNDS, "n_estimators": HIGH_CFG.get("n_estimators"),
+                    "half_life": HALF_LIFE, "n_jobs": N_JOBS, "model_file": MODEL_FILE},
+            duration=_t.time() - _t0,
+            notes=f"web 端训练 · 特征列数: {len(x_cols)}",
+        )
     except Exception as e:
         TRAIN_STATE.update(stage="失败", msg=str(e)[:200])
     finally:
@@ -295,8 +317,11 @@ def _train_job():
 
 @app.route("/api/train", methods=["POST"])
 def api_train():
-    if TRAIN_STATE["running"]:
-        return jsonify({"error": "训练已在运行中"}), 409
+    with TRAIN_LOCK:
+        if TRAIN_STATE["running"]:
+            return jsonify({"error": "训练已在运行中"}), 409
+        # 同步置位,避免并发请求(TOCTOU)
+        TRAIN_STATE.update(running=True, stage="排队中…", done=0, total=0, msg="")
     threading.Thread(target=_train_job, daemon=True).start()
     return jsonify({"ok": True})
 
@@ -306,8 +331,61 @@ def api_train_progress():
     return jsonify(TRAIN_STATE)
 
 
+@app.route("/api/model_info")
+def api_model_info():
+    """模型元信息(训练时间/轮数/小区数/特征数),供前端"模型信息"卡片展示。"""
+    try:
+        import joblib
+        from train_all import MODEL_FILE
+        if not os.path.exists(MODEL_FILE):
+            return jsonify({"exists": False})
+        pkg = joblib.load(MODEL_FILE)
+        return jsonify({
+            "exists": True,
+            "trained_at": pkg.get("trained_at", ""),
+            "n_rounds": pkg.get("n_rounds", 0),
+            "n_complexes": len(pkg.get("meta", [])),
+            "n_features": len(pkg.get("feature_cols", [])),
+            "has_macro": bool(pkg.get("has_macro")),
+            "model_file": MODEL_FILE,
+        })
+    except Exception as e:
+        return jsonify({"exists": False, "error": str(e)[:200]})
+
+
+@app.route("/api/static_info")
+def api_static_info():
+    """前端硬编码文案替代:训练小区数 / 特征维数 / 训练轮数 / 树数。"""
+    from train_all import TRAIN_ROUNDS, N_TREES
+    n_train = len(CACHE.get("complexes", [])) if CACHE.get("loaded") else None
+    n_test = len(CACHE.get("test", [])) if CACHE.get("loaded") else None
+    from features import ATTRIBUTE_COLS, FEATURE_COLS
+    from features import MACRO_COLS
+    n_feat = len(FEATURE_COLS) + len(MACRO_COLS) + len(ATTRIBUTE_COLS) + 1  # +complex_id
+    return jsonify({
+        "n_train": n_train, "n_test": n_test,
+        "n_features": n_feat, "train_rounds": TRAIN_ROUNDS, "n_trees": N_TREES,
+        "forecast_end": FORECAST_END,
+    })
+
+
 if __name__ == "__main__":
+    import logging
+    from logging.handlers import RotatingFileHandler
     import socket
+
+    # Web 服务日志落盘(控制台关窗后仍可追溯;5MB×3 轮转)
+    try:
+        log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        _handler = RotatingFileHandler(
+            os.path.join(log_dir, "web.log"), maxBytes=5 * 1024 * 1024,
+            backupCount=3, encoding="utf-8")
+        _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        app.logger.addHandler(_handler)
+        app.logger.setLevel(logging.INFO)
+    except Exception as e:
+        print(f"[提示] Web 日志初始化失败({e}),日志仅输出控制台")
 
     def _open_browser(port):
         import webbrowser
@@ -326,6 +404,9 @@ if __name__ == "__main__":
                 break
             except OSError:
                 port += 1
+    if port >= 5010:
+        # 5000-5009 全占用时仍尝试启动(失败会打印 Flask 错误)
+        port = 5000
     _open_browser(port)
     print(f"网页演示地址: http://127.0.0.1:{port}")
     app.run(host="127.0.0.1", port=port, debug=False)

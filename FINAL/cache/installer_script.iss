@@ -53,6 +53,7 @@ Source: "..\*.bat"; DestDir: "{app}"
 Source: "..\README.md"; DestDir: "{app}"
 Source: "..\requirements.txt"; DestDir: "{app}"
 Source: "..\Dockerfile"; DestDir: "{app}"
+Source: "..\.dockerignore"; DestDir: "{app}"
 Source: "answer.md"; DestDir: "{app}"
 Source: "LICENSE.txt"; DestDir: "{app}"
 

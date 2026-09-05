@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>无锡住宅房价预测系统</title>
-<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pinyin-pro@3/dist/pinyin-pro.min.js"></script>
+<script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/pinyin-pro.min.js') }}"></script>
 <style>
   :root {
     --primary:#5b4bc4; --primary2:#8b7cf6; --accent:#ff8a5c;
@@ -114,7 +114,7 @@
   <span class="logo">🏠</span>
   <div class="brand">
     <h1>无锡住宅小区房价预测系统</h1>
-    <span>372 训练小区 · 双轨模型 · 漂移检测 · 三情景</span>
+    <span id="subtitle">双轨模型 · 漂移检测 · 三情景</span>
   </div>
   <div class="tabs">
     <div class="tab active" id="tab-predict" onclick="switchTab('predict')">📈 预测</div>
@@ -169,9 +169,9 @@
   <div class="card">
     <h2>联合模型训练</h2>
     <div class="detail" style="font-size:14px">
-      用 <b>372 个训练小区</b>(与测试集物理隔离)+ 39 维特征
+      用 <b id="train-n"><span class="spinner"></span></b> 训练小区(与测试集物理隔离)+ <b id="train-f"></b> 维特征
       (价格形态 + 政策事件 + 宏观 + 小区属性)训练五模型集成:
-      Ridge + RF + GBR + XGB + LightGBM,<b>100 轮 × 500 树</b>,8 核并行加速。
+      Ridge + RF + GBR + XGB + LightGBM,<b id="train-r"></b> 轮 × <b id="train-t"></b> 树,8 核并行加速。
       训练约 <b>10 分钟</b>,完成后自动保存到 models/。
     </div>
     <div style="margin-top:16px">
@@ -196,8 +196,31 @@ let allComplexes = [];
 let loadStarted = false;
 const sel = document.getElementById("sel");
 
+/* ---------- HTML 转义(防注入:文件名/事件文案可能含特殊字符) ---------- */
+function escapeHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+/* ---------- 动态文案:训练小区数/特征维数/轮数/树数(替代硬编码) ---------- */
+async function loadStaticInfo() {
+  try {
+    const j = await (await fetch("/api/static_info")).json();
+    const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.textContent = v; };
+    if (j.n_train != null) {
+      set("train-n", j.n_train);
+      const sub = document.getElementById("subtitle");
+      if (sub) sub.textContent = `${j.n_train} 训练小区 · 双轨模型 · 漂移检测 · 三情景`;
+    }
+    set("train-f", j.n_features);
+    set("train-r", j.train_rounds);
+    set("train-t", j.n_trees);
+  } catch (e) { /* 静态信息获取失败,保留占位 */ }
+}
+
 // 页面加载立即开始加载小区数据(无需点击任何按钮)
-window.addEventListener("load", () => { if (!loadStarted) { loadStarted = true; init(); } });
+window.addEventListener("load", () => { loadStaticInfo(); if (!loadStarted) { loadStarted = true; init(); } });
 
 function switchTab(t) {
   document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
@@ -260,7 +283,14 @@ async function init() {
   }, 500);
 }
 
+/* 防抖:击键 150ms 内不重复重建下拉框 */
+let _filterTimer = null;
 function filterList() {
+  clearTimeout(_filterTimer);
+  _filterTimer = setTimeout(doFilterList, 150);
+}
+
+function doFilterList() {
   const q = document.getElementById("search").value.trim();
   sel.innerHTML = '<option value="">选择小区…</option>';
   // 拼音匹配:将查询转为拼音首字母/全拼
@@ -299,7 +329,13 @@ async function loadPredict() {
   pb.classList.add("indet");
   pt.textContent = "正在启动预测…"; pc.textContent = "";
   const r = await fetch("/api/predict?name=" + encodeURIComponent(name), { method: "POST" });
-  if (!r.ok) {
+  if (!r.ok && r.status !== 409) {
+    // 服务器错误(非"已有任务进行中"):直接提示,不空等
+    pt.textContent = "启动预测失败,请刷新页面重试";
+    setTimeout(() => { pp.style.display = "none"; }, 3000);
+    return;
+  }
+  if (r.status === 409) {
     // 已有任务在进行:继续轮询等待它完成
     pt.textContent = "已有预测进行中,等待完成…";
   }
@@ -353,11 +389,14 @@ function renderResult(d) {
     const fmt = v => v != null ? `¥${Number(v).toLocaleString()}` : "暂无数据";
     const fmtPct = v => v != null ? `${v}%` : "暂无数据";
     const stat = (lbl, val, sub) =>
-      `<div class="stat"><div class="lbl">${lbl}</div><div class="val">${val}</div>
+      `<div class="stat"><div class="lbl">${escapeHtml(lbl)}</div><div class="val">${val}</div>
        ${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
+    // 当前月 = 历史数据最后一个月(不再硬编码日期)
+    const curLabel = (d.hist && d.hist.length && d.hist[d.hist.length - 1].date)
+      ? `当前综合均价(${d.hist[d.hist.length - 1].date})` : "当前综合均价";
 
     document.getElementById("summary").innerHTML =
-      stat("当前综合均价(2026.06)", fmt(d.current)) +
+      stat(curLabel, fmt(d.current)) +
       stat(`${d.forecast_end || "2031.12"} 基准预测`, d.last ? fmt(d.last.p50) : "暂无数据",
            d.last ? `区间 [${fmt(d.last.p10)}, ${fmt(d.last.p90)}]` : "") +
       stat("乐观 / 悲观", d.last ? `${fmt(d.last.opt)} / ${fmt(d.last.pess)}` : "暂无数据",
@@ -370,15 +409,16 @@ function renderResult(d) {
       const dr = document.getElementById("drift");
       const lv = d.drift.level || "未知";
       const bcls = lv === "高" ? "badge-red" : lv === "中" ? "badge-orange" : "badge-green";
-      dr.innerHTML = `<span class="badge ${bcls}">漂移等级: ${lv}</span>
-        <div class="detail">${(d.drift.details || ["无详细信息"]).join("<br>")}</div>`;
+      dr.innerHTML = `<span class="badge ${bcls}">漂移等级: ${escapeHtml(lv)}</span>
+        <div class="detail">${(d.drift.details || ["无详细信息"]).map(escapeHtml).join("<br>")}</div>`;
       document.getElementById("card-drift").style.display = "";
     } else {
       document.getElementById("card-drift").style.display = "none";
     }
 
-    // 图表
-    const chart = echarts.init(document.getElementById("chart"));
+    // 图表(复用已初始化实例,避免重复 init 导致内存泄漏)
+    const chartEl = document.getElementById("chart");
+    const chart = echarts.getInstanceByDom(chartEl) || echarts.init(chartEl);
     if (d.pred && d.pred.length) {
       const dates = d.pred.map(p => p.date);
       chart.setOption({
@@ -423,14 +463,14 @@ function renderResult(d) {
       let html = `<table><tr><th>截断点</th><th>序列</th><th>MAE</th><th>MAPE%</th>
         <th>得分</th><th>覆盖率%</th><th>偏差%</th></tr>`;
       for (const r of rows)
-        html += `<tr><td>${r["截断点"] || ""}</td><td>${r["序列"] || ""}</td><td>${r.MAE != null ? r.MAE : ""}</td>
-          <td>${r["MAPE%"] != null ? r["MAPE%"] : ""}</td><td>${r["得分"] != null ? r["得分"] : ""}</td>
-          <td>${r["覆盖率%"] != null ? r["覆盖率%"] : ""}</td><td>${r["偏差%"] != null ? r["偏差%"] : ""}</td></tr>`;
+        html += `<tr><td>${escapeHtml(r["截断点"] || "")}</td><td>${escapeHtml(r["序列"] || "")}</td><td>${r.MAE != null ? escapeHtml(r.MAE) : ""}</td>
+          <td>${r["MAPE%"] != null ? escapeHtml(r["MAPE%"]) : ""}</td><td>${r["得分"] != null ? escapeHtml(r["得分"]) : ""}</td>
+          <td>${r["覆盖率%"] != null ? escapeHtml(r["覆盖率%"]) : ""}</td><td>${r["偏差%"] != null ? escapeHtml(r["偏差%"]) : ""}</td></tr>`;
       html += "</table>";
       const sm = d.diag.summary;
       if (sm) html += `<div class="detail" style="margin-top:10px">
-        平均得分 <b>${sm["平均得分"] || "?"}</b> · 平均偏差 ${sm["平均偏差%"] || "?"}% ·
-        置信度 <b>${sm["置信度"] || "?"}</b> · ${sm["建议"] || ""}</div>`;
+        平均得分 <b>${escapeHtml(sm["平均得分"] ?? "?")}</b> · 平均偏差 ${escapeHtml(sm["平均偏差%"] ?? "?")}% ·
+        置信度 <b>${escapeHtml(sm["置信度"] ?? "?")}</b> · ${escapeHtml(sm["建议"] || "")}</div>`;
       diag.innerHTML = html;
     } else {
       diag.innerHTML = "历史不足,无法诊断";
@@ -478,14 +518,19 @@ async function startTrain() {
   }, 700);
 }
 
-/* ---------- 模型信息 ---------- */
+/* ---------- 模型信息(读取模型元数据:训练时间/轮数/小区数/特征数) ---------- */
 async function loadModelInfo() {
   const el = document.getElementById("model-info");
   try {
-    const s = await (await fetch("/api/train_progress")).json();
-    el.innerHTML = s.running
-      ? `<span class="spinner"></span> 训练进行中: ${s.stage} (${s.done}/${s.total})`
-      : `当前模型: 最近一次训练 ${s.stage === "完成" ? "已完成" : "状态未知"} · ${s.msg || ""}`;
+    const j = await (await fetch("/api/model_info")).json();
+    if (!j.exists) {
+      el.innerHTML = "尚未训练模型。点击上方「开始训练」,或双击根目录 train.bat。";
+      return;
+    }
+    el.innerHTML = `模型文件: <b>ensemble_all.joblib</b>(${j.n_complexes || "?"} 个小区 · ` +
+      `${j.n_rounds || "?"} 轮 · ${j.n_features || "?"} 维特征 · ` +
+      `${j.has_macro ? "含宏观" : "无宏观"})<br>` +
+      `最近训练时间: <b>${escapeHtml(j.trained_at || "未知")}</b>`;
   } catch (e) { el.innerHTML = "无法获取模型信息"; }
 }
 </script>

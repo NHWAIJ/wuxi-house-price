@@ -9,8 +9,8 @@ import os
 import shutil
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # D:\BK
-FINAL = os.path.join(ROOT, "FINAL")
-CODE = os.path.join(FINAL, "04_code")
+CACHE = os.path.join(ROOT, "FINAL", "cache")
+CODE = os.path.join(CACHE, "04_code")
 
 
 def sync_code():
@@ -18,12 +18,12 @@ def sync_code():
     dst_s = os.path.join(CODE, "scripts")
     if os.path.isdir(dst_s):
         shutil.rmtree(dst_s)
-    shutil.copytree(os.path.join(FINAL, "scripts"), dst_s,
+    shutil.copytree(os.path.join(CACHE, "scripts"), dst_s,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     dst_d = os.path.join(CODE, "data")
     if os.path.isdir(dst_d):
         shutil.rmtree(dst_d)
-    shutil.copytree(os.path.join(FINAL, "data"), dst_d)
+    shutil.copytree(os.path.join(CACHE, "data"), dst_d)
     # 英文 bat(CRLF)
     bat = os.path.join(CODE, "run.bat")
     with open(bat, "w", newline="\r\n", encoding="utf-8") as f:

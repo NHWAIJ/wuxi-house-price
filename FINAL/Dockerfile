@@ -30,4 +30,6 @@ ENV BK_NO_GUI=1
 
 # 默认:启动 Web 演示
 EXPOSE 5000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/health')" || exit 1
 CMD ["python", "web/app.py"]

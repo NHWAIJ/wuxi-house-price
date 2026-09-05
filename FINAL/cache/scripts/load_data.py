@@ -64,11 +64,16 @@ def _to_float(v):
         return None
 
 
-def _rows(path, sheet_name):
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    ws = wb[sheet_name]
-    rows = [r for r in ws.iter_rows(values_only=True) if any(v is not None for v in r)]
-    wb.close()
+def _rows(path, sheet_name, wb=None):
+    own = wb is None
+    if own:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb[sheet_name]
+        rows = [r for r in ws.iter_rows(values_only=True) if any(v is not None for v in r)]
+    finally:
+        if own:
+            wb.close()
     return rows
 
 
@@ -109,9 +114,10 @@ def _find_header(rows):
 def _to_month(date_text, year=None, month=None):
     """把日期文本/年月转成月末 datetime。"""
     if year is not None and month is not None:
+        y = re.sub(r"[^\d]", "", _clean(year))     # 兼容「2019年」格式
         m = re.sub(r"[^\d]", "", _clean(month))
-        if m:
-            return pd.Timestamp(int(year), int(m), 1) + pd.offsets.MonthEnd(0)
+        if y and m:
+            return pd.Timestamp(int(y), int(m), 1) + pd.offsets.MonthEnd(0)
         return pd.NaT
     d = _clean(date_text)
     m = re.match(r"(\d{4})[.\-/年](\d{1,2})", d)
@@ -130,12 +136,12 @@ def _col_type(name):
 
 # ---------------------------------------------------------------- 单表解析
 
-def parse_price_sheet(path, sheet_name):
+def parse_price_sheet(path, sheet_name, wb=None):
     """
     解析一张价格表 → (DataFrame(date, 各价格列), is_actual列, 新房/二手标记)。
     自动识别:表头、日期列、价格列类型、数据标记列(★=实际点)、数据来源列。
     """
-    rows = _rows(path, sheet_name)
+    rows = _rows(path, sheet_name, wb)
     header, start = _find_header(rows)
     df = pd.DataFrame(rows[start:], columns=header)
     df = df.dropna(how="all").reset_index(drop=True)
@@ -209,9 +215,9 @@ def monthlyize(old_df):
 
 # ---------------------------------------------------------------- 事件表解析
 
-def parse_event_sheet(path, sheet_name):
+def parse_event_sheet(path, sheet_name, wb=None):
     """解析事件年表 → DataFrame(date, text, category)。"""
-    rows = _rows(path, sheet_name)
+    rows = _rows(path, sheet_name, wb)
     header, start = _find_header(rows)
     df = pd.DataFrame(rows[start:], columns=header).dropna(how="all").reset_index(drop=True)
     date_col = next((c for c in df.columns if any(k in c for k in DATE_SINGLE_KW)), None)
@@ -240,31 +246,43 @@ def parse_event_sheet(path, sheet_name):
 # ---------------------------------------------------------------- 小区级加载
 
 def load_complex(file_path):
-    """解析一个小区文件(内含新房表/二手房表/事件年表)。"""
+    """解析一个小区文件(内含新房表/二手房表/事件年表)。
+    修复:同一文件只打开一次 workbook(此前每个 sheet 各开一次);
+    多个二手房表时合并(按日期去重)后再插值。"""
     name = os.path.splitext(os.path.basename(file_path))[0]
     wb = openpyxl.load_workbook(file_path, read_only=True)
-    sheets = wb.sheetnames
-    wb.close()
-
-    new_df = old_df = None
-    events = None
-    for sh in sheets:
-        if any(k in sh for k in EVENT_SHEET_KW):
+    try:
+        sheets = wb.sheetnames
+        new_df = None
+        old_dfs = []
+        events = None
+        for sh in sheets:
+            if any(k in sh for k in EVENT_SHEET_KW):
+                try:
+                    events = parse_event_sheet(file_path, sh, wb)
+                except Exception:
+                    continue
+                continue
             try:
-                events = parse_event_sheet(file_path, sh)
+                df, phase = parse_price_sheet(file_path, sh, wb)
             except Exception:
                 continue
-            continue
-        try:
-            df, phase = parse_price_sheet(file_path, sh)
-        except Exception:
-            continue
-        if phase == "new" and new_df is None:
-            new_df = df
-        elif phase == "old" and old_df is None:
-            old_df = monthlyize(df)
-            if old_df is not None and len(old_df) == 0:
-                old_df = None   # 空二手房表(只有表头无数据)→ 视为无二手房
+            if phase == "new" and new_df is None:
+                new_df = df
+            elif phase == "old":
+                old_dfs.append(df)
+    finally:
+        wb.close()
+
+    # 多个二手房表合并(按日期去重,先到先得)后统一插值
+    old_df = None
+    if old_dfs:
+        merged = pd.concat(old_dfs, ignore_index=True)
+        merged = merged.sort_values("date").drop_duplicates(
+            subset="date", keep="first").reset_index(drop=True)
+        old_df = monthlyize(merged)
+        if old_df is not None and len(old_df) == 0:
+            old_df = None   # 空二手房表(只有表头无数据)→ 视为无二手房
     if new_df is None and old_df is None:
         raise ValueError(f"{name}: 未解析到任何价格表")
     if old_df is None:

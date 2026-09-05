@@ -2,7 +2,8 @@
 # Python 3.9+ (64-bit), 3.13 实测通过
 # 纯 CPU 训练,无需 GPU,自动多核并行
 
-pandas>=1.5
+# pandas>=2.2:代码使用 freq="ME"(月末)写法,1.x/2.0/2.1 会报 Invalid frequency
+pandas>=2.2
 numpy>=1.23
 scikit-learn>=1.2
 statsmodels>=0.13

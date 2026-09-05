@@ -17,7 +17,7 @@ import joblib
 
 from train_all import (load_all_complexes, build_pooled, MODEL_FILE, MODEL_DIR,
                        _make_progress, TRAIN_ROUNDS, HIGH_CFG, HALF_LIFE,
-                       train_parallel, N_JOBS)
+                       train_parallel, N_JOBS, save_model)
 from features import build_events, load_extra_events, load_macro, load_attrs
 from models import Ensemble
 
@@ -73,15 +73,13 @@ def train_phase(complexes, events, pw, macro=None, resume=False, add_rounds=20):
         all_models = new_models
         merged_rounds = n_rounds
 
-    joblib.dump({"models": all_models, "meta": meta,
-                 "feature_cols": x_cols, "has_macro": bool(macro),
-                 "attr_info": attr_info,
-                 "n_rounds": merged_rounds, "cfg": HIGH_CFG,
-                 "trained_at": time.strftime("%Y-%m-%d %H:%M")},
-                MODEL_FILE)
+    save_model({"models": all_models, "meta": meta,
+                "feature_cols": x_cols, "has_macro": bool(macro),
+                "attr_info": attr_info,
+                "n_rounds": merged_rounds, "cfg": HIGH_CFG,
+                "trained_at": time.strftime("%Y-%m-%d %H:%M")})
     report("训练完成,模型已保存", 98, f"模型 → {MODEL_FILE}")
     return all_models
-
 
 def main():
     import argparse
@@ -121,10 +119,11 @@ def _run(pw, resume=False, add_rounds=20):
     # 训练(进度 0-50%)
     train_phase(complexes, events, pw, macro, resume=resume, add_rounds=add_rounds)
 
-    # 预测(进度 50-100%,复用同一窗口)
+    # 预测(进度 50-100%,复用同一窗口;复用已解析小区避免重复加载)
     print("\n→ 开始预测(对原两个小区 2024.09 起测试预测)…\n")
     from predict import main_impl as predict_main
-    predict_main(pw=pw, events=events, macro=macro, base_pct=50.0, span=50.0)
+    predict_main(pw=pw, events=events, macro=macro, complexes=complexes,
+                 base_pct=50.0, span=50.0)
 
     print(f"\n全程完成,总耗时 {time.time() - t0:.0f} 秒")
     if pw is not None:

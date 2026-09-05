@@ -8,11 +8,9 @@ drift.py — 分布漂移检测器:
 指标(全部只用 ≤ 预测时刻的信息,无泄漏):
   - 近 12 个月动量(当前价/12个月前 - 1)在训练集的分位数
   - 回撤比(当前价/历史峰值)在训练集的分位数
-  - 宏观动量(全市均价 12 个月变化)的分位数
 漂移等级 = 距最近分布边缘的距离: <5% 高, <15% 中, 否则低。
 """
 import numpy as np
-import pandas as pd
 from config_loader import CFG
 
 # ---- 从集中配置读取漂移检测参数 ----
@@ -26,7 +24,7 @@ _MIN_DIST = _DRC["min_dist_samples"]
 def build_train_distribution(complexes, macro=None):
     """
     用训练集构建"行情分布":每个训练小区最后时点的
-    (12月动量, 回撤比) + 宏观全市均价 12 月动量(如提供)。
+    (12月动量, 回撤比)。
     返回 dict 含各指标的数组。
     """
     mom12s, dds = [], []
@@ -37,12 +35,7 @@ def build_train_distribution(complexes, macro=None):
         mom12s.append(s.iloc[-1] / s.iloc[-13] - 1)
         peak = float(s.max())
         dds.append(s.iloc[-1] / peak if peak else 1.0)
-    out = {"mom12": np.array(mom12s), "dd": np.array(dds)}
-    if macro and "全市二手均价_聚合" in macro:
-        cp = macro["全市二手均价_聚合"]["全市均价(元/㎡)"]
-        if len(cp) >= 13:
-            out["city_mom12"] = np.array([cp.iloc[-1] / cp.iloc[-13] - 1])
-    return out
+    return {"mom12": np.array(mom12s), "dd": np.array(dds)}
 
 
 def _pct(x, dist):
@@ -67,17 +60,7 @@ def drift_assessment(dist, target_series, macro=None):
         f"近12月动量 {mom12:+.1%} → 训练集 {p_mom:.0f}% 分位",
         f"回撤比 {dd:.2f}(当前/峰值) → 训练集 {p_dd:.0f}% 分位",
     ]
-    p_city = None
-    # 全市动量仅在训练分布样本充足(>=10)时参与——单样本分位数恒为 0/100,会误报高漂移
-    if macro and "city_mom12" in dist and len(dist["city_mom12"]) >= 10             and "全市二手均价_聚合" in macro:
-        cp = macro["全市二手均价_聚合"]["全市均价(元/㎡)"]
-        if len(cp) >= 13:
-            city_mom = float(cp.iloc[-1] / cp.iloc[-13] - 1)
-            p_city = _pct(city_mom, dist["city_mom12"])
-            details.append(f"全市均价12月动量 {city_mom:+.1%} → 训练集 {p_city:.0f}% 分位")
     edges = [min(p_mom, 100 - p_mom), min(p_dd, 100 - p_dd)]
-    if p_city is not None:
-        edges.append(min(p_city, 100 - p_city))
     edge = min(edges)
     score = float(edge)
     if edge < _HIGH_TH:

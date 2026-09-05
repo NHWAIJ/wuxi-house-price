@@ -31,7 +31,6 @@ from features import ATTRIBUTE_COLS
 from plot_monthly import draw as draw_history
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHART_DIR = os.path.join(ROOT, "comparison")
 OFFICIAL_CHART_DIR = os.path.join(ROOT, "charts")
 os.makedirs(OFFICIAL_CHART_DIR, exist_ok=True)
 
