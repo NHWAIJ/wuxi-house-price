@@ -122,22 +122,26 @@ def build_price_features(df):
     df = df.copy().sort_values("date").reset_index(drop=True)
     p = df["price"]
     prev = p.shift(1)                     # 截至 t-1 的价格序列
+    first = p.dropna().iloc[0] if p.notna().any() else np.nan   # 该序列首价(边界填充用)
     df["t_idx"] = np.arange(len(df), dtype=float)
     df["year"] = df["date"].dt.year
     df["month_sin"] = np.sin(2 * np.pi * df["date"].dt.month / 12)
     df["month_cos"] = np.cos(2 * np.pi * df["date"].dt.month / 12)
+    # 滞后特征边界处理:数据不足 lag 个月时,用该序列首价近似 / 收益置 0。
+    # 修复:训练集截断后(如 372 小区截断到 2024.08 恰好 12 个月),lag12 全 NaN 会把样本全滤掉。
+    # 注意:推理侧(models._row_price_features)必须与这里的边界口径一致。
     for lag in (1, 3, 6, 12):
-        df[f"p_lag{lag}"] = p.shift(lag)
-        df[f"r_lag{lag}"] = p.shift(lag).pct_change(1)   # lag 月的已知收益
-    df["ma6"] = prev.rolling(6, min_periods=1).mean()     # t-6..t-1 均值
-    df["ma12"] = prev.rolling(12, min_periods=1).mean()
-    df["vol12"] = p.pct_change().shift(1).rolling(12).std()  # t-12..t-1 波动率
+        df[f"p_lag{lag}"] = p.shift(lag).fillna(first)
+        df[f"r_lag{lag}"] = p.shift(lag).pct_change(1).fillna(0.0)   # 无足够历史时收益置 0
+    df["ma6"] = prev.rolling(6, min_periods=1).mean().fillna(first)
+    df["ma12"] = prev.rolling(12, min_periods=1).mean().fillna(first)
+    df["vol12"] = p.pct_change().shift(1).rolling(12).std().fillna(0.0)  # 无足够历史时波动置 0
     peak_sofar = prev.cummax()                            # 截至 t-1 的历史峰值
-    df["dd_ratio"] = prev / peak_sofar
+    df["dd_ratio"] = (prev / peak_sofar).fillna(1.0)      # 首行无峰值 → 视为无回撤
     ms, peak_pos = [], None
     for i in range(len(df)):
         if np.isnan(prev.values[i]):
-            ms.append(ms[-1] + 1 if ms else np.nan)
+            ms.append(0.0)                                # 首行边界:距峰值 0
             continue
         if peak_pos is None or prev.values[i] >= prev.values[peak_pos] * (1 - 1e-9):
             peak_pos = i

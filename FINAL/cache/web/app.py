@@ -18,11 +18,30 @@ from flask import Flask, jsonify, render_template, request
 
 from load_data import load_complex, WORKBOOK_DIR
 from features import load_macro
-from predict import formal_forecast, FORECAST_END, SCENARIOS
+from predict import formal_forecast, pooled_future_forecast, FORECAST_END, SCENARIOS
 from drift import build_train_distribution, drift_assessment
 from target_diagnose import diagnose_one
 
 app = Flask(__name__)
+
+# 联合模型懒加载缓存(309MB,首次使用加载一次;训练接口可使其失效)
+MODEL_PKG = {"pkg": None, "load_fail": False}
+
+
+def get_model_pkg():
+    """加载联合模型(线程安全弱,单机单线程足够)。失败返回 None 并提示。"""
+    pkg = MODEL_PKG["pkg"]
+    if pkg is None and not MODEL_PKG["load_fail"]:
+        try:
+            import joblib
+            from train_all import MODEL_FILE
+            if os.path.exists(MODEL_FILE):
+                pkg = joblib.load(MODEL_FILE)
+                MODEL_PKG["pkg"] = pkg
+        except Exception as e:
+            MODEL_PKG["load_fail"] = True
+            print(f"  ⚠ 联合模型加载失败({e}),分布内小区将回退 Holt")
+    return pkg
 
 # 并发保护:预测/训练接口先同步置位再起线程,避免两个请求同时通过检查
 PRED_LOCK = threading.Lock()
@@ -83,7 +102,7 @@ def _load_job():
         # 按原始顺序恢复
         complexes = [complex_map[p] for p in paths if p in complex_map]
         test = [complex_map[p] for p in test_paths if p in complex_map]
-        LOAD_STATE.update(stage="构建宏观与漂移分布", done=len(all_paths))
+        LOAD_STATE.update(stage="构建事件/宏观/漂移分布", done=len(all_paths))
         macro = load_macro()
         attrs = None
         try:
@@ -91,9 +110,20 @@ def _load_job():
             attrs = load_attrs()
         except Exception:
             pass
+        # 事件序列:训练集事件年表 + 外部事件,截断到训练截止(与联合模型训练口径一致)
+        events = None
+        try:
+            from config_loader import CFG as _CFG
+            from features import build_events, load_extra_events
+            all_ev = pd.concat([c["events"] for c in complexes if c["events"] is not None],
+                               ignore_index=True)
+            events = build_events(all_ev, load_extra_events())
+            events = events[events.index <= pd.Timestamp(_CFG["train"]["cutoff"])]
+        except Exception:
+            pass
         dist = build_train_distribution(complexes, macro)
         CACHE.update({"complexes": complexes, "test": test, "macro": macro,
-                      "attrs": attrs, "dist": dist,
+                      "attrs": attrs, "events": events, "dist": dist,
                       "loaded": True})
         LOAD_STATE.update(done=LOAD_STATE["total"], stage="完成",
                           msg=f"加载完成:{len(complexes)} 个训练小区")
@@ -186,12 +216,36 @@ def _predict_job(name):
         rows, summary, _ = diagnose_one(c, None)
         PRED_STATE.update(stage="多截断点诊断完成", pct=55)
 
-        # 5. 正式预测(55%-90%,三情景)
-        PRED_STATE.update(stage="正式预测(三情景)…", pct=70)
-        try:
-            fresult = formal_forecast(c, scenarios=True)
-        except Exception as e:
-            raise RuntimeError(f"正式预测失败: {e}")
+        # 5. 正式预测(55%-90%):双轨制——
+        #    测试集(北控/帝泊湾,分布外单边深跌) → Holt 趋势衰减 + 三情景;
+        #    训练集小区(分布内,形态多样) → 联合模型递归预测(实证:分布内联合模型远优于 Holt)。
+        PRED_STATE.update(stage="正式预测(双轨制)…", pct=70)
+        is_test = any(cc["name"] == name for cc in d.get("test", []))
+        if is_test:
+            try:
+                fresult = formal_forecast(c, scenarios=True)
+                model_tag = "Holt 趋势衰减 + 三情景"
+            except Exception as e:
+                raise RuntimeError(f"正式预测失败: {e}")
+        else:
+            pkg = get_model_pkg()
+            if pkg is not None and d.get("events") is not None:
+                try:
+                    fresult = pooled_future_forecast(
+                        c, pkg["models"], d["events"], macro=d["macro"],
+                        attrs=d.get("attrs"), attr_info=pkg.get("attr_info"), meta=pkg["meta"])
+                    model_tag = "联合模型(五模型集成)递归预测"
+                except Exception as e:
+                    print(f"  ⚠ 联合模型预测失败({e}),回退 Holt")
+                    fresult = None
+            else:
+                fresult = None
+            if fresult is None:
+                try:
+                    fresult = formal_forecast(c, scenarios=True)
+                    model_tag = "Holt 趋势衰减(联合模型不可用回退)"
+                except Exception as e:
+                    raise RuntimeError(f"正式预测失败: {e}")
         f = fresult.get("综合") or next(iter(fresult.values()), None)
         if f is None:
             raise RuntimeError("该小区无有效价格序列,无法预测")
@@ -202,8 +256,9 @@ def _predict_job(name):
                 "date": row["date"],
                 "p10": round(float(row["P10"])), "p50": round(float(row["P50"])),
                 "p90": round(float(row["P90"])),
-                "opt": round(float(scen["乐观"][row["date"]])),
-                "pess": round(float(scen["悲观"][row["date"]])),
+                "opt": round(float(scen["乐观"][row["date"]])) if "乐观" in scen else None,
+                "pess": round(float(scen["悲观"][row["date"]])) if "悲观" in scen else None,
+                "method": model_tag,
             })
         cur = hist[-1]["zonghe"] if hist else None
         last = pred[-1] if pred else None

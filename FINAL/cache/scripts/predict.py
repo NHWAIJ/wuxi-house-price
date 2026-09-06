@@ -42,7 +42,11 @@ CHARTS_DIR = os.path.join(ROOT, "charts")
 # ---- 从集中配置读取预测参数 ----
 _PC = CFG["predict"]
 FORECAST_END = _PC["forecast_end"]
-SCENARIOS = _PC["scenarios"]
+_SCEN_RAW = _PC["scenarios"]
+# 键映射:config.yaml 用英文键(baseline/optimistic/pessimistic),对外统一中文键(基准/乐观/悲观)。
+# 修复:此前 config 改英文键后 export_xlsx / web 仍按中文键取值,触发 KeyError。
+_SCEN_CN = {"baseline": "基准", "optimistic": "乐观", "pessimistic": "悲观"}
+SCENARIOS = {_SCEN_CN.get(k, k): v for k, v in _SCEN_RAW.items()}
 
 # 预测目标:data/test 下的小区(测试集,原两个:北控/帝泊湾)
 TARGET_DIR = WORKBOOK_DIR
@@ -92,13 +96,15 @@ def load_targets():
 
 
 def pooled_predict(target_series, mean_price, cid, models, events, n, seed=2026,
-                   macro=None, attrs=None, attr_info=None, complex_name=None):
+                   macro=None, attrs=None, attr_info=None, complex_name=None,
+                   scenario="基准"):
     """
     用联合模型对目标小区递归预测 n 个月(标准化价格域)。
     target_series: date/price/is_actual(原始价格,截断后);mean_price: 该小区标准化均值。
     macro: load_macro() 结果;预测期宏观自动取最后已知值(LPR/全市均价持平假设)。
     attrs/attr_info: 属性表与训练时保存的 scale/medians;新小区按名取属性,
       无属性行用全局中位数(与训练口径一致)。
+    scenario: 预测期事件情景("基准"/"乐观"/"悲观"),对应 features.future_event_flow。
     返回 DataFrame: date + 每模型一列预测(原始价格域)。
     """
     from features import future_event_flow
@@ -126,8 +132,9 @@ def pooled_predict(target_series, mean_price, cid, models, events, n, seed=2026,
         arow = row.copy()
         arow[ATTR_NUM] = arow[ATTR_NUM] / pd.Series(attr_info["scale"])
         comb[ATTRIBUTE_COLS] = arow.values
-    # 预测期事件 = 延续最近 12 个月政策节奏(与正式预测一致,避免未来月事件特征衰减)
-    events_full = pd.concat([events, future_event_flow(events, "基准", n)])
+    # 预测期事件 = 延续最近 12 个月政策节奏(与正式预测一致,避免未来月事件特征衰减);
+    # scenario 决定未来事件流的变体(基准/乐观/悲观)
+    events_full = pd.concat([events, future_event_flow(events, scenario, n)])
     comb = attach_events(build_price_features(comb), events_full)
 
     has_attrs = attrs is not None and attr_info is not None
@@ -214,6 +221,51 @@ def holt_damped_predict(series, n, warm_months=22, slope_half_life=36,
 #   基准 36 = 当前默认(3 年衰减一半);
 #   乐观 18 = 趋势快速收敛止跌(政策回暖、跌幅收窄);
 #   悲观 72 = 下行延续(政策持续收紧,趋势维持更久)。
+
+
+def pooled_future_forecast(c, models, events, macro=None, attrs=None, attr_info=None,
+                           meta=None):
+    """
+    联合模型未来预测(分布内小区:训练集/新小区用):
+      用该小区全历史 + 联合模型递归预测至 FORECAST_END,输出 P10/P50/P90。
+    返回与 formal_forecast 同构: {t: DataFrame(date,P10,P50,P90,mean), _meta}。
+    说明:事件特征占比极低(<1%),分布内小区三情景差异可忽略,故只出基准区间;
+    三情景完整支持仍由 Holt 趋势衰减(formal_forecast)承担。
+    """
+    old = c["old"]
+    name = c["name"]
+    meta_names = {m["name"]: m for m in meta} if meta else {}
+    result = {}
+    for t in targets_for(old):
+        series = series_for_target(old, t)
+        n = months_to_end(series["date"].max())
+        if n <= 0:
+            continue
+        if name in meta_names:
+            cid, mean_price = meta_names[name]["id"], meta_names[name]["mean"]
+        else:
+            cid = 99999
+            mean_price = float(series["price"].mean())
+        try:
+            base = pooled_predict(series, mean_price, cid, models, events, n,
+                                  macro=macro, attrs=attrs, attr_info=attr_info,
+                                  complex_name=name)
+            if base is None:
+                continue
+            vals = base.drop(columns=["date"])
+            result[t] = pd.DataFrame({
+                "date": base["date"],
+                "P10": vals.quantile(0.10, axis=1).values,
+                "P50": vals.quantile(0.50, axis=1).values,
+                "P90": vals.quantile(0.90, axis=1).values,
+                "mean": vals.mean(axis=1).values,
+            })
+        except Exception as e:
+            print(f"  ⚠ {name} {t} 联合模型预测失败: {e}")
+    if not result:
+        return None
+    result["_meta"] = {"targets": targets_for(old), "beta": {}}
+    return result
 
 
 def formal_forecast(c, scenarios=False):

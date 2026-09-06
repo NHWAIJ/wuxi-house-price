@@ -57,7 +57,8 @@ predict:
   interval_scale: 0.5
   # bootstrap 轮数
   n_rounds: 30
-  # 三情景趋势衰减半衰期(月)
+  # 三情景趋势衰减半衰期(月);键为英文(baseline/optimistic/pessimistic),
+  # 代码内自动映射为中文(基准/乐观/悲观)供导出与网页使用
   scenarios:
     baseline: 36
     optimistic: 18

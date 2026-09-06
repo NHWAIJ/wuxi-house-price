@@ -399,9 +399,10 @@ function renderResult(d) {
       stat(curLabel, fmt(d.current)) +
       stat(`${d.forecast_end || "2031.12"} 基准预测`, d.last ? fmt(d.last.p50) : "暂无数据",
            d.last ? `区间 [${fmt(d.last.p10)}, ${fmt(d.last.p90)}]` : "") +
-      stat("乐观 / 悲观", d.last ? `${fmt(d.last.opt)} / ${fmt(d.last.pess)}` : "暂无数据",
-           "三情景 P50") +
-      stat("LPR 环境", d.macro_end && d.macro_end.lpr != null ? `${d.macro_end.lpr}%` : "暂无数据", "5年期以上");
+      stat("乐观 / 悲观", (d.last && d.last.opt != null) ? `${fmt(d.last.opt)} / ${fmt(d.last.pess)}` : "—",
+           (d.last && d.last.opt != null) ? "三情景 P50" : "联合模型:事件敏感度低,仅基准区间") +
+      stat("LPR 环境", d.macro_end && d.macro_end.lpr != null ? `${d.macro_end.lpr}%` : "暂无数据", "5年期以上") +
+      stat("预测方法", d.last && d.last.method ? escapeHtml(d.last.method) : "—", "双轨制");
     document.getElementById("card-summary").style.display = "";
 
     // 漂移检测
@@ -421,9 +422,27 @@ function renderResult(d) {
     const chart = echarts.getInstanceByDom(chartEl) || echarts.init(chartEl);
     if (d.pred && d.pred.length) {
       const dates = d.pred.map(p => p.date);
+      const hasScen = d.pred.some(p => p.opt != null);
+      const series = [
+        { name: "历史综合均价", type: "line", data: (d.hist || []).map(h => [h.date, h.zonghe]), symbol: "none",
+          lineStyle: { color: "#2b2b3a", width: 2 } },
+        { name: "50%区间", type: "line", data: d.pred.map(p => p.p10), lineStyle: { opacity: 0 }, stack: "band", symbol: "none" },
+        { name: "50%区间", type: "line", data: d.pred.map(p => p.p90 - p.p10), lineStyle: { opacity: 0 }, stack: "band", symbol: "none",
+          areaStyle: { color: "rgba(91,75,196,0.16)" } },
+        { name: "基准P50", type: "line", data: d.pred.map(p => p.p50), symbol: "none",
+          lineStyle: { color: "#5b4bc4", width: 2.6 } },
+      ];
+      if (hasScen) {
+        series.push(
+          { name: "乐观", type: "line", data: d.pred.map(p => p.opt), symbol: "none",
+            lineStyle: { color: "#27ae60", width: 1.6, type: "dashed" } },
+          { name: "悲观", type: "line", data: d.pred.map(p => p.pess), symbol: "none",
+            lineStyle: { color: "#e67e22", width: 1.6, type: "dashed" } },
+        );
+      }
       chart.setOption({
         tooltip: { trigger: "axis", valueFormatter: v => v ? v.toLocaleString() : v },
-        legend: { data: ["历史综合均价", "基准P50", "50%区间", "乐观", "悲观"], top: 0, textStyle:{color:"#555"} },
+        legend: { data: hasScen ? ["历史综合均价", "基准P50", "50%区间", "乐观", "悲观"] : ["历史综合均价", "基准P50", "50%区间"], top: 0, textStyle:{color:"#555"} },
         grid: { left: 85, right: 35, top: 42, bottom: 72 },
         xAxis: { type: "category", data: dates, axisLabel: { rotate: 60, fontSize: 9, color:"#999" },
                  axisLine: { lineStyle: { color: "#d8d5ea" } } },
@@ -435,19 +454,7 @@ function renderResult(d) {
             borderColor: "#d8d5ea", fillerColor: "rgba(91,75,196,0.12)",
             handleStyle: { color: "#5b4bc4" } },
         ],
-        series: [
-          { name: "历史综合均价", type: "line", data: (d.hist || []).map(h => [h.date, h.zonghe]), symbol: "none",
-            lineStyle: { color: "#2b2b3a", width: 2 } },
-          { name: "50%区间", type: "line", data: d.pred.map(p => p.p10), lineStyle: { opacity: 0 }, stack: "band", symbol: "none" },
-          { name: "50%区间", type: "line", data: d.pred.map(p => p.p90 - p.p10), lineStyle: { opacity: 0 }, stack: "band", symbol: "none",
-            areaStyle: { color: "rgba(91,75,196,0.16)" } },
-          { name: "基准P50", type: "line", data: d.pred.map(p => p.p50), symbol: "none",
-            lineStyle: { color: "#5b4bc4", width: 2.6 } },
-          { name: "乐观", type: "line", data: d.pred.map(p => p.opt), symbol: "none",
-            lineStyle: { color: "#27ae60", width: 1.6, type: "dashed" } },
-          { name: "悲观", type: "line", data: d.pred.map(p => p.pess), symbol: "none",
-            lineStyle: { color: "#e67e22", width: 1.6, type: "dashed" } },
-        ],
+        series,
       });
     } else {
       chart.setOption({

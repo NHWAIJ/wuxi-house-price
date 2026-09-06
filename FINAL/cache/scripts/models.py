@@ -178,27 +178,31 @@ def _row_price_features(comb, pos):
     """
     单行特征计算(与 build_price_features 全表口径完全一致,仅用 ≤t-1 的信息):
     供递归预测逐行使用,避免每填一个月就全表重算(66月×30轮下的性能关键)。
+    边界口径:数据不足 lag 个月时,滞后价用序列首价近似 / 收益置 0(与 features 侧 fillna 一致)。
     """
     p = comb["price"].values
     f = {}
 
     def pv(i):
-        return p[i] if 0 <= i < len(p) else np.nan
+        # 越界处理:左边界(i<0)用首价近似,右边界(i>=len)用 NaN(未来尚未生成)
+        if i < 0:
+            return p[0] if len(p) else np.nan
+        return p[i] if i < len(p) else np.nan
 
     for lag in (1, 3, 6, 12):
         f[f"p_lag{lag}"] = pv(pos - lag)
         if pos - lag - 1 >= 0 and p[pos - lag - 1]:
             f[f"r_lag{lag}"] = p[pos - lag] / p[pos - lag - 1] - 1
         else:
-            f[f"r_lag{lag}"] = np.nan
+            f[f"r_lag{lag}"] = 0.0 if pos - lag - 1 < 0 else np.nan
     seg6 = p[max(0, pos - 6):pos]
     seg12 = p[max(0, pos - 12):pos]
-    f["ma6"] = seg6.mean() if len(seg6) else np.nan
-    f["ma12"] = seg12.mean() if len(seg12) else np.nan
+    f["ma6"] = seg6.mean() if len(seg6) else (p[0] if len(p) else np.nan)
+    f["ma12"] = seg12.mean() if len(seg12) else (p[0] if len(p) else np.nan)
     seg13 = p[max(0, pos - 13):pos]
     rets = np.diff(seg13) / seg13[:-1] if len(seg13) >= 3 else np.array([])
-    # 与 pandas rolling.std 一致:ddof=1
-    f["vol12"] = rets.std(ddof=1) if len(rets) >= 2 else np.nan
+    # 与 pandas rolling.std 一致:ddof=1;样本不足时波动置 0(与 features 侧 fillna(0) 一致)
+    f["vol12"] = rets.std(ddof=1) if len(rets) >= 2 else 0.0
     if pos > 0:
         peak = float(np.max(p[:pos]))
         f["dd_ratio"] = p[pos - 1] / peak if peak else 1.0

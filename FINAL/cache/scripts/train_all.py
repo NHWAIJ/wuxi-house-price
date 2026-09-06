@@ -176,6 +176,12 @@ def build_pooled(complexes, events, macro=None, attrs=None):
     """
     has_macro = bool(macro)
     has_attrs = attrs is not None and len(attrs) > 0
+    # 训练样本严格截断(论文口径:训练集截断至 2024.08):
+    #   价格与事件均只用 ≤ TRAIN_CUTOFF,联合模型绝不"见过"测试期(2024.09 后)行情,
+    #   这样回顾性打分(如 predict_random 对 2024.09+ 的对比)才是诚实的。
+    #   注意:load_all_complexes 仍返回全历史(漂移检测分布依赖训练小区最新状态),截断仅在此处。
+    if events is not None and len(events):
+        events = events[events.index <= TRAIN_CUTOFF]
     x_cols = FEATURE_COLS + (MACRO_COLS if has_macro else []) \
         + (ATTRIBUTE_COLS if has_attrs else []) + ["complex_id"]
     # 属性数值列按全局均值缩放(Ridge 对尺度敏感:楼龄 0-50 vs 距地铁 0-20)
@@ -186,9 +192,9 @@ def build_pooled(complexes, events, macro=None, attrs=None):
         attr_info = {"scale": attr_scale.to_dict(), "medians": attr_medians.to_dict()}
     X_list, y_list, w_list, meta_rows = [], [], [], []
     for cid, c in enumerate(complexes):
-        old = c["old"]
+        old = c["old"][c["old"]["date"] <= TRAIN_CUTOFF]
         if len(old) < MIN_HISTORY:
-            print(f"  跳过 {c['name']}(历史 {len(old)} 个月 < {MIN_HISTORY})")
+            print(f"  跳过 {c['name']}(截断后历史 {len(old)} 个月 < {MIN_HISTORY})")
             continue
         mean_price = float(old["price"].mean())
         s = old[["date", "price", "is_actual"]].copy()
