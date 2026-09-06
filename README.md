@@ -1,11 +1,24 @@
 # 无锡住宅房价预测系统 —— 交付说明
 
-> 本文件夹（D:\BK\FINAL）即**全部交付物**：代码 + 数据 + 模型 + 全部产物。
+> 本文件夹（D:\BK\FINAL）即**全部交付物**：代码 + 数据 + 模型 + 安装包 + 全部产物。
 > 换一台电脑，把本文件夹**整体复制**过去，按本说明安装依赖后即可运行。
+>
+> **开源仓库**：https://github.com/NHWAIJ/wuxi-house-price ｜ **许可证**：MIT
 
 ---
 
-## 一、目录结构
+## 一、项目简介
+
+基于机器学习技术的无锡住宅成交价预测系统，以无锡 372 个商品房小区、中位 33 个月的二手房成交价为训练样本，采用**双轨制**预测架构：
+
+- **目标小区**（北控·雁栖湖 / 新力·帝泊湾）：Holt 双指数平滑 + 季节叠加 + 趋势衰减，断点测试得分 **98.3 / 88.0** 分；
+- **新小区**：五模型集成联合模型（Ridge + RF + GBR + XGBoost + LightGBM），100 轮 Bootstrap × 500 树，跨小区知识迁移。
+
+系统覆盖 **数据管理 → 特征工程 → 模型训练 → 断点测试 → 精度评估 → 网页可视化** 全流程，并具备分布漂移检测、三情景预测、多截断点诊断等特色能力。
+
+---
+
+## 二、目录结构
 
 ```text
 D:\BK\
@@ -13,60 +26,89 @@ D:\BK\
     ├── README.md                       本说明(从零开始运行指南)
     ├── cache\                          全部交付物(数据/代码/模型/产物/安装包)
     │   ├── data\                       数据
-    │   │   ├── train\
+    │   │   ├── train\                  训练集(372 个小区,按走势形态分 6 类)
     │   │   │   ├── 01_deep_fall\       深跌未反弹
     │   │   │   ├── 02_v_rebound\       V 型反弹
     │   │   │   ├── 03_flat_decline\    横盘阴跌
     │   │   │   ├── 04_rising\          逆势上涨
+    │   │   │   ├── 05_neighbor_hudai\  邻居板块(胡埭/马山/太湖)
     │   │   │   └── 06_regular\         其他(常规)
     │   │   ├── test\                   测试集(北控雁栖湖、新力帝泊湾,与训练集物理隔离)
     │   │   ├── complex_attrs.xlsx      小区属性表(学区/楼龄/绿化率/城区等,可补充)
-    │   │   └── macro.xlsx              宏观月度数据(LPR/全市均价/区域均价)
+    │   │   ├── macro.xlsx              宏观月度数据(LPR/全市均价/区域均价)
+    │   │   └── _unused\                自动整理时移出的备份(确认后手动删除)
     │   ├── config.yaml                 集中配置(所有可调参数,修改后重跑即生效)
     │   ├── scripts\                    全部代码
     │   │   ├── config_loader.py        配置加载器(读取 config.yaml,自动回退默认值)
-    │   │   ├── experiment_tracker.py   实验追踪(每次训练/预测记录到 experiments.csv)
-    │   │   ├── validate_data.py        数据校验(检查新小区表格格式/价格合理性)
+    │   │   ├── train_all.py            联合模型训练(含 --resume 增量训练)
+    │   │   ├── run_joint.py            单窗口全流程:训练 → 自动预测
+    │   │   ├── predict.py              目标小区预测 + 打分(网页后端也调用)
+    │   │   ├── forecast.py             Holt 预测 + 区间校准(评估与正式预测共用口径)
+    │   │   ├── features.py             特征工程 + 政策事件打分
+    │   │   ├── models.py               五模型集成 + 递归预测
+    │   │   ├── drift.py                分布漂移检测
+    │   │   ├── target_diagnose.py      多截断点诊断
+    │   │   ├── load_data.py            自适应 Excel 解析(不依赖固定模板)
+    │   │   ├── validate_data.py        数据校验(格式/价格合理性/历史月数)
+    │   │   ├── experiment_tracker.py   实验追踪(记录到 experiments.csv)
+    │   │   ├── _organize_data.py       新增小区自动去重、分类归位
+    │   │   ├── organize_final.py       同步 04_code 正式运行包
     │   │   └── tests\                  单元测试
     │   │       ├── test_config.py      配置测试
     │   │       └── test_validate.py    数据校验测试
     │   ├── web\                        网页应用(Flask 后端 + 前端页面)
-    │   │   ├── templates\
-    │   │   │   └── index.html
-    │   │   └── app.py
-    │   ├── models\                     联合模型(ensemble_all.joblib,约 2-3GB,训练产物)
+    │   │   ├── templates\index.html   前端页面(拼音搜索 + ECharts 图 + 缩放滑块)
+    │   │   ├── static\js\              前端依赖本地副本(echarts/pinyin-pro,离线可用)
+    │   │   └── app.py                  Flask 后端(加载/预测/训练/健康检查)
+    │   ├── models\                     联合模型(ensemble_all.joblib,约 330MB)
     │   ├── charts\                     历史走势图(自动清理)
     │   ├── comparison\{1,2,3,…}\       每次预测:对比图 + 预测延伸图(编号递增保留)
     │   ├── output\                     预测表 + 打分表 + 对比表(XLSX)
-    │   ├── logs\                       运行日志
+    │   ├── logs\                       运行日志(train_*.txt / web.log / predict_latest.log)
+    │   ├── experiments.csv             实验追踪表(首次训练后生成)
     │   ├── defense_deliverables\       答辩交付物
-    │   ├── 04_code\                    正式运行包(脚本+数据副本)
-    │   │   ├── data\                   数据副本(同 data 结构)
-    │   │   ├── scripts\                代码副本
-    │   │   ├── requirements.txt
-    │   │   └── run.bat
+    │   ├── 04_code\                    正式运行包(scripts + data + run.bat 只读副本)
     │   ├── dist_setup\                 安装包目录
     │   ├── _deleted\                   已移走文件备份(确认后手动删除)
-    │   │   └── 房价预测系统_APP副本\
     │   ├── INSTALL_INFO.txt
-    │   ├── LICENSE.txt
-    │   └── answer.md
+    │   ├── LICENSE.txt                 MIT 许可证
+    │   ├── answer.md
+    │   ├── installer_script.iss        Inno Setup 安装包脚本
+    │   └── _gen_copyright_pdfs.py      软件著作权登记材料生成脚本
     ├── train.bat                       训练 + 自动预测(10-12 分钟)
     ├── predict.bat                     直接预测(1-2 分钟)
     ├── diagnose.bat                    目标小区诊断(多截断点)+ 正式预测
-    ├── test.bat                        随机小区测试
+    ├── test.bat                        测试集打分(北控/帝泊湾)
     ├── web.bat                         网页演示(自动打开浏览器)
+    ├── collect_final.bat               同步正式运行包(04_code/)
     ├── 编译安装包.bat                  编译安装包(Inno Setup)
     ├── Dockerfile                      容器化(一行命令构建 Docker 镜像)
+    ├── .dockerignore                   镜像排除清单(模型/产物不打包)
     ├── requirements.txt                依赖清单(根目录,供 Docker/新环境使用)
     └── _fix_thesis.py                  论文辅助脚本
 ```
 
 ---
 
-## 二、新电脑环境搭建(首次使用)
+## 三、功能亮点
 
-### 0. 安装(正式安装包)或直接github部署整个项目
+| 能力 | 说明 |
+| ---- | ---- |
+| 双轨制预测 | 目标小区用 Holt 趋势外推（实证最优），新小区用五模型集成联合模型，各取所长 |
+| 三情景预测 | 基准（36 月半衰期）/ 乐观（18 月）/ 悲观（72 月），预测至 2031.12 |
+| 分布漂移检测 | 实时判断当前行情是否在训练分布内，超标自动降级提示预测可信度 |
+| 多截断点诊断 | 4 个历史截断点 walk-forward 回测，输出 MAE/RMSE/MAPE/得分/覆盖率 |
+| 政策事件打分 | 自动识别「放松/放宽/解除限购」等宽松政策为正面事件，纳入滚动窗口特征 |
+| 增量训练 | `--resume` 追加轮次（默认 20 轮），新增数据无需全量重训 |
+| 网页演示 | 拼音模糊搜索、ECharts 区间图 + 缩放滑块、真实进度条、离线可用 |
+| 集中配置 | 所有可调参数集中在 config.yaml，一处修改全局生效 |
+
+---
+
+## 四、新电脑环境搭建(首次使用)
+
+### 0. 安装(唯一方式:正式安装包)
+
 双击 `房价预测系统_安装包.exe` —— 完整应用安装引导:
 欢迎页 → 许可协议(MIT)→ 安装说明 → **选择安装路径**(默认
 `C:\Program Files\WuxiHousePrice`,英文路径,避免中文路径兼容性问题)
@@ -104,6 +146,8 @@ pip install pandas numpy scikit-learn statsmodels openpyxl matplotlib joblib lig
 安装内容:pandas / numpy / scikit-learn / statsmodels / openpyxl / matplotlib / joblib / lightgbm / xgboost / flask。
 **不需要 GPU、不需要 CUDA**(训练自动多核并行,8 核约 10-12 分钟)。
 
+> 注意:**pandas 需 ≥ 2.2**(代码使用 `freq="ME"` 月末写法,低版本会报 Invalid frequency)。
+
 ### 3. 验证环境(依赖是否装好)
 
 ```PowerShell
@@ -116,14 +160,14 @@ python -c "import pandas, sklearn, statsmodels, openpyxl, matplotlib, lightgbm, 
 
 ---
 
-## 三、怎么运行
+## 五、怎么运行
 
 | 操作            | 方式                      | 耗时       | 产出                                |
 | --------------- | ------------------------- | ---------- | ----------------------------------- |
 | 训练 + 自动预测 | 双击`train.bat`         | 10-12 分钟 | 新模型 + 打分表追加 + 对比图/预测图 |
 | 只预测(不重训)  | 双击`predict.bat`       | 1-2 分钟   | 打分表追加 + 对比图/预测图          |
 | 目标小区诊断    | 双击`diagnose.bat`      | 2-3 分钟   | 多截断点诊断(控制台)+ 预测表        |
-| 随机小区测试    | 双击`test.bat`          | 5-10 分钟  | 随机 5 个小区打分                   |
+| 测试集打分      | 双击`test.bat`          | 5-10 分钟  | 北控/帝泊湾打分(固定测试集)         |
 | 网页演示(答辩)  | 双击`web.bat`           | 秒级启动   | 浏览器:选小区→历史/预测/诊断/漂移  |
 | 同步正式包      | 双击`collect_final.bat` | 秒级       | 04_code/ 更新为最新 scripts + data  |
 
@@ -132,16 +176,17 @@ python -c "import pandas, sklearn, statsmodels, openpyxl, matplotlib, lightgbm, 
 - 打分追加到 `output\accuracy_metrics.xlsx`(主表,含"特征占比"sheet)与 `output\打分表.xlsx`
 - **对比折线图 + 预测延伸折线图**(至 2031.12,50% 区间 + 三情景)存入 `comparison\{新编号}\`(编号递增,永久保留)
 - 预测表(含情景 sheet)存入 `output\predictions_{小区}.xlsx`
+- 每次训练/预测自动记录到 `experiments.csv`(参数 + 耗时 + 得分,可回溯)
 
 ### 首次运行建议顺序
 
 1. 双击 `train.bat` —— 用现有 372 个小区 + 宏观/属性数据训练联合模型,并自动对北控/帝泊湾做测试预测
 2. 双击 `web.bat` —— 网页浏览预测结果(答辩演示)
-3. 之后日常:有新数据就按第四/五节操作,再训练
+3. 之后日常:有新数据就按第六/七节操作,再训练
 
 ---
 
-## 四、加入训练集(新增小区参与训练)
+## 六、加入训练集(新增小区参与训练)
 
 ### 1. 准备小区表格(Excel)
 
@@ -155,7 +200,7 @@ python -c "import pandas, sklearn, statsmodels, openpyxl, matplotlib, lightgbm, 
 
 ### 2. 放入 incoming 文件夹(按形态分类)
 
-在 `data\incoming\` 下按小区走势形态放入(分类名是训练多样性关键):
+新建 `data\incoming\`,按小区走势形态放入(分类名是训练多样性关键):
 
 ```
 data\incoming\
@@ -175,19 +220,19 @@ data\incoming\
 python scripts\_organize_data.py
 ```
 
-自动完成:删除与现有重复的文件 → 按分类移到 `data\train\对应文件夹` → 无用的移入 `_deleted\`。
+自动完成:删除与现有重复的文件 → 按分类移到 `data\train\对应文件夹` → 无用的移入备份目录。
 
 ### 4. 重新训练
 
-双击 `train.bat`。
+双击 `train.bat`(新数据量小也可用增量训练:`python scripts\train_all.py --resume`)。
 
 ---
 
-## 五、加入测试集(验证预测准不准的小区)
+## 七、加入测试集(验证预测准不准的小区)
 
 ### 1. 准备小区表格
 
-格式同第四节,但该小区**必须有 2024.09 之后的真实价格数据**——系统会把 2024.08 前的数据作为训练窗口,用 2024.09 起的真实价格来打分。
+格式同第六节,但该小区**必须有 2024.09 之后的真实价格数据**——系统会把 2024.08 前的数据作为训练窗口,用 2024.09 起的真实价格来打分。
 
 ### 2. 放入测试集
 
@@ -213,33 +258,44 @@ copy 某小区_价格数据表.xlsx data\test\
 
 ---
 
-## 六、模型与数据说明
+## 八、模型与数据说明
 
 | 项                    | 说明                                                                                  |
 | --------------------- | ------------------------------------------------------------------------------------- |
 | 目标小区(北控/帝泊湾) | **Holt 趋势外推 + 季节叠加 + 趋势衰减**(实证最优:北控 98.3 分 / 帝泊湾 88.0 分) |
 | ALL 新小区            | **联合模型**(Ridge+RF+GBR+XGB+LightGBM 五模型等权,100 轮 × 500 树,并行训练)    |
 | 训练集                | 372 个唯一小区 × 中位 33 个月历史,按形态分 6 类                                      |
+| 训练截断              | 训练样本严格 ≤2024.08(价格与事件均截断),与测试评估同一截断点——回顾性打分诚实可信      |
 | 测试集                | 北控/帝泊湾(2024.09 起真实数据对比,不参与训练)                                        |
-| 特征                  | 价格形态 21 维 + 政策事件 3 维 + 宏观 4 维(LPR/全市均价)+ 小区属性 14 维              |
-| 预测区间              | **50% 区间**(P10-P90,数据驱动分位数,可配置)                                     |
-| 新增能力              | 分布漂移检测(可信度降级提示)· 三情景预测(基准/乐观/悲观)· 多截断点诊断 · 网页演示  |
+| 特征                  | 38 维 + complex_id:价格形态 17 维 + 政策事件 3 维 + 宏观 4 维(LPR/全市均价)+ 小区属性 14 维 |
+| 预测区间              | **50% 区间**(P10-P90,数据驱动分位数校准 + 缩放,可配置)                          |
+| 模型体积              | ensemble_all.joblib 约 330MB(删除后 train.bat 会重新生成)                        |
+| 评估口径              | 断点测试与正式预测共用同一套 Holt 区间校准逻辑(打分表覆盖率与线上展示一致)          |
 | 打分                  | 0-100 分(MAE/RMSE/MAPE/覆盖率综合),每次训练追加                                       |
 
 ---
 
-## 七、常见问题
+## 九、版本历史
+
+| 版本   | 日期       | 内容                                                                   |
+| ------ | ---------- | ---------------------------------------------------------------------- |
+| v1.1.0 | 2026-09-05 | 工程化修复:配置硬编码覆盖/空事件崩溃/评估口径统一/事件打分修复/前端离线化/并发竞态/原子保存模型等 |
+| v1.0.0 | 2026-08-29 | 正式发布:双轨制预测、五模型集成、网页演示、安装包、Docker、增量训练、实验追踪 |
+
+---
+
+## 十、常见问题
 
 **Q: 训练要多久?**
-A: 8 核 CPU 约 10-12 分钟(100 轮 × 5 模型并行);核心越多越快。数据更多时可用记事本打开
-`scripts\train_all.py`,把 `TRAIN_ROUNDS = 100` 调成 60 可减半。
+A: 8 核 CPU 约 10-12 分钟(100 轮 × 5 模型并行);核心越多越快。数据更多时可在
+`cache\config.yaml` 把 `train.rounds` 调成 60 可减半。
 
 **Q: 预测要多久?**
-A: 1-2 分钟——主要耗时是解析 372 个训练小区构建漂移检测分布;Holt 预测本身为秒级。
+A: 1-2 分钟——主要耗时是解析 372 个训练小区构建漂移检测分布(训练后自动预测会复用已解析数据,更快);Holt 预测本身为秒级。
 
-**Q: 模型文件太大(2-3GB)?**
-A: 100 轮 × 500 棵树的产物。磁盘紧张可删 `models\ensemble_all.joblib`
-(下次 `train.bat` 会重新生成),或调低 `TRAIN_ROUNDS`。
+**Q: 模型文件太大?**
+A: 100 轮 × 500 棵树的产物(约 330MB)。磁盘紧张可删 `models\ensemble_all.joblib`
+(下次 `train.bat` 会重新生成),或调低 `cache\config.yaml` 的 `train.rounds`。
 
 **Q: 弹窗显示"未响应"?**
 A: 不会。进度窗口运行在独立线程,计算在主线程外进行,窗口始终可操作。
@@ -248,5 +304,26 @@ A: 不会。进度窗口运行在独立线程,计算在主线程外进行,窗口
 A: 依赖没装全,执行: `pip install pandas numpy scikit-learn statsmodels openpyxl matplotlib joblib lightgbm xgboost flask`
 
 **Q: 区间怎么调整?**
-A: 打开 `scripts\predict.py` 顶部,`INTERVAL_QUANTILES = (25, 75)` 为 50% 区间
-(改 `(10, 90)` 为 80% 区间),`INTERVAL_SCALE = 0.5` 为缩放系数。
+A: 编辑 `cache\config.yaml` 的 `predict.interval_quantiles`:`[25, 75]` 为 50% 区间
+(改 `[10, 90]` 为 80% 区间),`predict.interval_scale = 0.5` 为缩放系数。
+
+**Q: 网页打不开 / 没进度条?**
+A: 先确认服务窗口还开着(端口默认 5000);浏览器按 Ctrl+F5 强制刷新。前端依赖已本地打包,无外网也能正常显示图表。
+
+**Q: 增量训练和全量训练区别?**
+A: 增量训练(`--resume`)加载已有模型追加 20 轮,节省时间;全量训练从零开始重训 100 轮。新增小区数量多时建议全量训练。
+
+**Q: 漂移检测红色警告怎么办?**
+A: 表示当前行情不在训练分布内,预测可信度降低。建议等新数据积累后重训,或参考三情景中的悲观情景作为保守估计。
+
+---
+
+## 十一、开源与许可证
+
+- **GitHub 仓库**:https://github.com/NHWAIJ/wuxi-house-price
+- **许可证**:MIT License(详见 `LICENSE.txt`)
+- **论文**:《基于机器学习技术的住宅成交价预测系统——以无锡为例》
+
+---
+
+*本说明随安装包同步更新;修改代码或数据后请重新编译安装包(`编译安装包.bat`)。*
